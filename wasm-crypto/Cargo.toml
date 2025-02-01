@@ -1,0 +1,17 @@
+[package]
+name = "wasm-crypto"
+version = "0.1.0"
+authors = ["Sogo Kato <sogokato@outlook.com>>"]
+description = "WASM library to AES encryption"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/SogoKato/local-file-locker"
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aes-gcm = "0.10.3"
+sha2 = "0.10.8"
+wasm-bindgen = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
