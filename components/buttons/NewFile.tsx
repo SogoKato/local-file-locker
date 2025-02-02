@@ -16,17 +16,33 @@ const NewFile: React.FC<NewFileProps> = ({
   password,
 }) => {
   const [newFiles, setNewFiles] = useState<File[]>([]);
+  const [hasEncFile, setHasEncFile] = useState<boolean>(false);
+  const [encFileOnly, setEncFileOnly] = useState<boolean>(false);
   const [dirPath, setDirPath] = useState<string>("");
-  const disabled = newFiles.length === 0 || password === "";
+  const disabled = newFiles.length === 0 || (password === "" && !encFileOnly);
 
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
     setNewFiles(files);
+    const encFiles = files.filter((f) => f.name.endsWith(".enc"));
+    setHasEncFile(encFiles.length > 0);
+    setEncFileOnly(encFiles.length === files.length);
   };
 
   const encryptFiles = async () => {
     const newEntries: FileEntry[] = await Promise.all(
       Array.from(newFiles).map(async (file) => {
+        if (file.name.endsWith(".enc")) {
+          const nameWithoutEnc = file.name.replace(new RegExp(".enc$"), "");
+          return {
+            kind: "file",
+            name: file.name,
+            path: `${dirPath}/${nameWithoutEnc}`,
+            size: file.size,
+            plainData: null,
+            cipherData: new Uint8Array(await file.arrayBuffer()),
+          };
+        }
         const plainData = new Uint8Array(await file.arrayBuffer());
         return {
           kind: "file",
@@ -70,6 +86,11 @@ const NewFile: React.FC<NewFileProps> = ({
             />
           </div>
         </label>
+        {hasEncFile ? (
+          <div>
+            ℹ️ <code>.enc</code> file(s) are loaded without encryption.
+          </div>
+        ) : null}
       </div>
       <div className="flex grow justify-end">
         <button
@@ -77,7 +98,11 @@ const NewFile: React.FC<NewFileProps> = ({
           disabled={disabled}
           onClick={encryptFiles}
         >
-          encrypt
+          {hasEncFile && encFileOnly
+            ? "load"
+            : hasEncFile
+            ? "encrypt/load"
+            : "encrypt"}
         </button>
       </div>
     </div>
