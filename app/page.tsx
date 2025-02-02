@@ -3,7 +3,7 @@ import NewFile from "@/components/buttons/NewFile";
 import { useEffect, useState } from "react";
 import init from "@/wasm-crypto/pkg/wasm_crypto";
 import Finder from "@/components/Finder";
-import { Entry, listFilesInDirectory } from "@/lib/opfs";
+import { Entry, listEntries } from "@/lib/opfs";
 
 export default function Home() {
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -12,7 +12,7 @@ export default function Home() {
 
   useEffect(() => {
     init();
-    listFilesInDirectory().then((rootEntries) => setEntries(rootEntries));
+    listEntries("").then((rootEntries) => setEntries(rootEntries));
   }, []);
 
   return (
@@ -58,15 +58,15 @@ export default function Home() {
                 . This app is intended for hobby use, and the author assumes no
                 responsibility for any damages resulting from its use.
               </p>
-          <h2 className="font-bold my-2 text-lg">How to Use</h2>
-          <ol className="list-decimal pl-8">
+              <h2 className="font-bold my-2 text-lg">How to Use</h2>
+              <ol className="list-decimal pl-8">
                 <li>Set a password for encryption and decryption.</li>
-            <li>Select files.</li>
+                <li>Select files.</li>
                 <li>
                   Click the <b>encrypt</b> button to encrypt and save the file.
                 </li>
-            <li>To view a file, click its filename.</li>
-          </ol>
+                <li>To view a file, click its filename.</li>
+              </ol>
               <div className="w-full">
                 <button
                   className="bg-slate-300 dark:bg-slate-600 hover:bg-violet-400 hover:dark:bg-violet-700 block duration-300 font-semibold ml-auto mt-2 px-4 py-2 rounded-full hover:text-violet-700 hover:dark:text-violet-100 text-sm transition-all w-fit"
