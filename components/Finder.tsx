@@ -3,7 +3,7 @@
 import { getMimeType } from "@/lib/mime";
 import { deleteFile, deleteDir, listEntries, Entry } from "@/lib/opfs";
 import { decrypt } from "@/wasm-crypto/pkg/wasm_crypto";
-import { JSX, useState } from "react";
+import { JSX, useCallback, useEffect, useMemo, useState } from "react";
 
 type FinderProps = {
   className?: string;
@@ -18,10 +18,11 @@ const Finder: React.FC<FinderProps> = ({
   setEntries,
   password,
 }) => {
-  const [visible, setVisible] = useState<boolean>();
+  const [visible, setVisible] = useState<boolean>(false);
   const [preview, setPreview] = useState<JSX.Element>();
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
 
-  const openEntry = async (entry: Entry) => {
+  const openEntry = useCallback(async (entry: Entry) => {
     if (entry.kind === "file") {
       if (entry.plainData === null) {
         try {
@@ -42,9 +43,11 @@ const Finder: React.FC<FinderProps> = ({
             setPreview(
               <img
                 className="max-h-dvh max-w-dvw z-10"
+                alt={entry.name}
                 src={event.target.result}
               />
             );
+            setPreviewPath(entry.path);
             setVisible(true);
           }
         };
@@ -57,6 +60,7 @@ const Finder: React.FC<FinderProps> = ({
                 {event.target.result}
               </pre>
             );
+            setPreviewPath(entry.path);
             setVisible(true);
           }
         };
@@ -67,7 +71,50 @@ const Finder: React.FC<FinderProps> = ({
       entry.children = subEntries;
       setEntries([...entries]);
     }
-  };
+  }, [entries, password, setEntries]);
+
+  const previewFiles = useMemo(() => {
+    const flattenFiles = (targetEntries: Entry[]): Entry[] =>
+      targetEntries.flatMap((targetEntry) => {
+        if (targetEntry.kind === "file") return [targetEntry];
+        if (targetEntry.children) return flattenFiles(targetEntry.children);
+        return [];
+      });
+    return flattenFiles(entries);
+  }, [entries]);
+
+  const previewIndex = useMemo(
+    () => previewFiles.findIndex((entry) => entry.path === previewPath),
+    [previewFiles, previewPath]
+  );
+
+  const movePreview = useCallback(
+    (offset: -1 | 1) => {
+      if (previewIndex === -1) return;
+      const target = previewFiles[previewIndex + offset];
+      if (target) void openEntry(target);
+    },
+    [openEntry, previewFiles, previewIndex]
+  );
+
+  useEffect(() => {
+    if (!visible) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setVisible(false);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        movePreview(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        movePreview(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [visible, movePreview]);
 
   const downloadEntry = async (entry: Entry) => {
     if (entry.kind === "directory") return;
@@ -170,11 +217,32 @@ const Finder: React.FC<FinderProps> = ({
           className="absolute bg-black h-full opacity-50 w-full z-0"
           onClick={() => setVisible(false)}
         />
+        {previewFiles.length > 1 ? (
+          <>
+            <button
+              className="absolute duration-300 h-full hover:bg-white/10 left-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
+              onClick={() => movePreview(-1)}
+              aria-label="Previous file"
+            >
+              ←
+            </button>
+            <button
+              className="absolute duration-300 h-full hover:bg-white/10 right-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
+              onClick={() => movePreview(1)}
+              aria-label="Next file"
+            >
+              →
+            </button>
+          </>
+        ) : null}
         {preview}
         <button
-          className="absolute bg-red-500 h-[24] m-1 p-1 right-0 rounded-full w-[24] top-0 z-20"
+          className="absolute bg-red-500 duration-300 h-12 hover:bg-red-600 m-1 right-0 rounded-full text-3xl text-white top-0 transition-colors w-12 z-20"
           onClick={() => setVisible(false)}
-        />
+          aria-label="Close preview"
+        >
+          ×
+        </button>
       </div>
     </div>
   );
