@@ -89,10 +89,14 @@ const Finder: React.FC<FinderProps> = ({
   );
 
   const movePreview = useCallback(
-    (offset: -1 | 1) => {
-      if (previewIndex === -1) return;
+    (offset: -1 | 1): boolean => {
+      if (previewIndex === -1) return false;
       const target = previewFiles[previewIndex + offset];
-      if (target) void openEntry(target);
+      if (target) {
+        void openEntry(target);
+        return true;
+      }
+      return false;
     },
     [openEntry, previewFiles, previewIndex]
   );
@@ -103,11 +107,9 @@ const Finder: React.FC<FinderProps> = ({
       if (event.key === "Escape") {
         setVisible(false);
       } else if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        movePreview(-1);
+        if (movePreview(-1)) event.preventDefault();
       } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        movePreview(1);
+        if (movePreview(1)) event.preventDefault();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -220,16 +222,20 @@ const Finder: React.FC<FinderProps> = ({
         {previewFiles.length > 1 ? (
           <>
             <button
-              className="absolute duration-300 h-full hover:bg-white/10 left-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
+              type="button"
+              className="absolute disabled:pointer-events-none duration-300 h-full hover:bg-white/10 left-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
               onClick={() => movePreview(-1)}
               aria-label="Previous file"
+              disabled={previewIndex <= 0}
             >
               ←
             </button>
             <button
-              className="absolute duration-300 h-full hover:bg-white/10 right-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
+              type="button"
+              className="absolute disabled:pointer-events-none duration-300 h-full hover:bg-white/10 right-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
               onClick={() => movePreview(1)}
               aria-label="Next file"
+              disabled={previewIndex >= previewFiles.length - 1}
             >
               →
             </button>
@@ -237,6 +243,7 @@ const Finder: React.FC<FinderProps> = ({
         ) : null}
         {preview}
         <button
+          type="button"
           className="absolute bg-red-500 duration-300 h-12 hover:bg-red-600 m-1 right-0 rounded-full text-3xl text-white top-0 transition-colors w-12 z-20"
           onClick={() => setVisible(false)}
           aria-label="Close preview"
