@@ -223,28 +223,36 @@ const Finder: React.FC<FinderProps> = ({
           <>
             <button
               type="button"
-              className="absolute disabled:pointer-events-none duration-300 h-full hover:bg-white/10 left-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
+              className="absolute disabled:opacity-0 disabled:pointer-events-none duration-300 flex h-full items-center justify-center left-0 transition-all w-[20vw] z-20 group/prev hover:bg-white/5"
               onClick={() => movePreview(-1)}
               aria-label="Previous file"
               disabled={previewIndex <= 0}
             >
-              ←
+              <span className="bg-black/40 backdrop-blur-sm duration-300 flex h-12 items-center justify-center rounded-full text-white/70 transition-all w-12 group-hover/prev:bg-black/60 group-hover/prev:scale-110 group-hover/prev:text-white">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+              </span>
             </button>
             <button
               type="button"
-              className="absolute disabled:pointer-events-none duration-300 h-full hover:bg-white/10 right-0 text-5xl text-white/70 transition-all w-[20vw] z-10 hover:text-white"
+              className="absolute disabled:opacity-0 disabled:pointer-events-none duration-300 flex h-full items-center justify-center right-0 transition-all w-[20vw] z-20 group/next hover:bg-white/5"
               onClick={() => movePreview(1)}
               aria-label="Next file"
               disabled={previewIndex >= previewFiles.length - 1}
             >
-              →
+              <span className="bg-black/40 backdrop-blur-sm duration-300 flex h-12 items-center justify-center rounded-full text-white/70 transition-all w-12 group-hover/next:bg-black/60 group-hover/next:scale-110 group-hover/next:text-white">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </span>
             </button>
           </>
         ) : null}
         {preview}
         <button
           type="button"
-          className="absolute bg-red-500 duration-300 h-12 hover:bg-red-600 m-1 right-0 rounded-full text-3xl text-white top-0 transition-colors w-12 z-20"
+          className="absolute bg-red-500 duration-300 h-12 hover:bg-red-600 m-1 right-0 rounded-full text-3xl text-white top-0 transition-colors w-12 z-30"
           onClick={() => setVisible(false)}
           aria-label="Close preview"
         >
