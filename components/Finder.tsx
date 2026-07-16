@@ -229,7 +229,7 @@ const Finder: React.FC<FinderProps> = ({
               disabled={previewIndex <= 0}
             >
               <span className="bg-black/40 backdrop-blur-sm duration-300 flex h-12 items-center justify-center rounded-full text-white/70 transition-all w-12 group-hover/prev:bg-black/60 group-hover/prev:scale-110 group-hover/prev:text-white">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true" focusable="false">
                   <polyline points="15 18 9 12 15 6" />
                 </svg>
               </span>
@@ -242,7 +242,7 @@ const Finder: React.FC<FinderProps> = ({
               disabled={previewIndex >= previewFiles.length - 1}
             >
               <span className="bg-black/40 backdrop-blur-sm duration-300 flex h-12 items-center justify-center rounded-full text-white/70 transition-all w-12 group-hover/next:bg-black/60 group-hover/next:scale-110 group-hover/next:text-white">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true" focusable="false">
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
               </span>
