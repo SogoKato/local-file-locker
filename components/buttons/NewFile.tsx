@@ -1,6 +1,6 @@
 "use client";
 import { writeFile, listEntries, Entry, FileEntry } from "@/lib/opfs";
-import { ChangeEvent, useState } from "react";
+import { ChangeEvent, useMemo, useState } from "react";
 import { encrypt } from "@/wasm-crypto/pkg/wasm_crypto";
 
 type NewFileProps = {
@@ -10,8 +10,16 @@ type NewFileProps = {
   password: string;
 };
 
+const collectDirPaths = (entries: Entry[]): string[] =>
+  entries.flatMap((entry) => {
+    if (entry.kind !== "directory") return [];
+    const childPaths = entry.children ? collectDirPaths(entry.children) : [];
+    return [entry.path, ...childPaths];
+  });
+
 const NewFile: React.FC<NewFileProps> = ({
   className,
+  entries,
   setEntries,
   password,
 }) => {
@@ -20,6 +28,7 @@ const NewFile: React.FC<NewFileProps> = ({
   const [encFileOnly, setEncFileOnly] = useState<boolean>(false);
   const [dirPath, setDirPath] = useState<string>("");
   const disabled = newFiles.length === 0 || (password === "" && !encFileOnly);
+  const dirPaths = useMemo(() => collectDirPaths(entries), [entries]);
 
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
@@ -85,8 +94,14 @@ const NewFile: React.FC<NewFileProps> = ({
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
+              list="dir-path-list"
               onChange={(event) => setDirPath(event.target.value)}
             />
+            <datalist id="dir-path-list">
+              {dirPaths.map((path) => (
+                <option key={path} value={path} />
+              ))}
+            </datalist>
           </div>
         </label>
         {hasEncFile ? (
