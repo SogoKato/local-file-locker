@@ -1,6 +1,6 @@
 "use client";
 import { writeFile, listEntries, Entry, FileEntry } from "@/lib/opfs";
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { encrypt } from "@/wasm-crypto/pkg/wasm_crypto";
 
 type NewFileProps = {
@@ -27,8 +27,18 @@ const NewFile: React.FC<NewFileProps> = ({
   const [hasEncFile, setHasEncFile] = useState<boolean>(false);
   const [encFileOnly, setEncFileOnly] = useState<boolean>(false);
   const [dirPath, setDirPath] = useState<string>("");
-  const disabled = newFiles.length === 0 || (password === "" && !encFileOnly);
+  const [isEncrypting, setIsEncrypting] = useState<boolean>(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const disabled =
+    newFiles.length === 0 || (password === "" && !encFileOnly) || isEncrypting;
   const dirPaths = useMemo(() => collectDirPaths(entries), [entries]);
+
+  useEffect(() => {
+    if (!successMessage) return;
+    const timer = setTimeout(() => setSuccessMessage(null), 4000);
+    return () => clearTimeout(timer);
+  }, [successMessage]);
 
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
@@ -39,37 +49,53 @@ const NewFile: React.FC<NewFileProps> = ({
   };
 
   const encryptFiles = async () => {
-    const newEntries: FileEntry[] = await Promise.all(
-      Array.from(newFiles).map(async (file) => {
-        if (file.name.endsWith(".enc")) {
-          const nameWithoutEnc = file.name.replace(new RegExp(".enc$"), "");
+    setIsEncrypting(true);
+    setSuccessMessage(null);
+    try {
+      const newEntries: FileEntry[] = await Promise.all(
+        Array.from(newFiles).map(async (file) => {
+          if (file.name.endsWith(".enc")) {
+            const nameWithoutEnc = file.name.replace(new RegExp(".enc$"), "");
+            return {
+              kind: "file",
+              name: file.name,
+              path: `${dirPath}/${nameWithoutEnc}`,
+              size: file.size,
+              plainData: null,
+              cipherData: new Uint8Array(await file.arrayBuffer()),
+            };
+          }
+          const plainData = new Uint8Array(await file.arrayBuffer());
           return {
             kind: "file",
             name: file.name,
-            path: `${dirPath}/${nameWithoutEnc}`,
+            path: `${dirPath}/${file.name}`,
             size: file.size,
-            plainData: null,
-            cipherData: new Uint8Array(await file.arrayBuffer()),
+            plainData: plainData,
+            cipherData: await encrypt(password, plainData),
           };
-        }
-        const plainData = new Uint8Array(await file.arrayBuffer());
-        return {
-          kind: "file",
-          name: file.name,
-          path: `${dirPath}/${file.name}`,
-          size: file.size,
-          plainData: plainData,
-          cipherData: await encrypt(password, plainData),
-        };
-      })
-    );
+        })
+      );
 
-    for (const entry of newEntries) {
-      if (!entry.cipherData) throw new Error("cipher data is empty");
-      await writeFile(entry.path, entry.cipherData);
+      for (const entry of newEntries) {
+        if (!entry.cipherData) throw new Error("cipher data is empty");
+        await writeFile(entry.path, entry.cipherData);
+      }
+
+      await listEntries("").then((rootEntries) => setEntries(rootEntries));
+
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setNewFiles([]);
+      setHasEncFile(false);
+      setEncFileOnly(false);
+      setSuccessMessage(
+        `✅ ${newEntries.length} file${
+          newEntries.length === 1 ? "" : "s"
+        } saved successfully.`
+      );
+    } finally {
+      setIsEncrypting(false);
     }
-
-    listEntries("").then((rootEntries) => setEntries(rootEntries));
   };
 
   return (
@@ -79,6 +105,7 @@ const NewFile: React.FC<NewFileProps> = ({
           className="file:bg-violet-300 file:dark:bg-violet-600 file:hover:bg-violet-400 file:hover:dark:bg-violet-700 file:border-0 file:cursor-pointer file:duration-300 file:mr-4 file:rounded-full file:px-4 file:py-2 file:text-sm file:font-semibold file:text-violet-700 dark:file:text-violet-100 file:transition-all"
           type="file"
           multiple
+          ref={fileInputRef}
           onChange={onChange}
         />
         <label className="flex gap-4 items-center">
@@ -109,6 +136,11 @@ const NewFile: React.FC<NewFileProps> = ({
             ℹ️ <code>.enc</code> file(s) are loaded without encryption.
           </div>
         ) : null}
+        {successMessage ? (
+          <div className="text-green-600 dark:text-green-400 font-semibold">
+            {successMessage}
+          </div>
+        ) : null}
       </div>
       <div className="flex grow justify-end">
         <button
@@ -116,7 +148,9 @@ const NewFile: React.FC<NewFileProps> = ({
           disabled={disabled}
           onClick={encryptFiles}
         >
-          {hasEncFile && encFileOnly
+          {isEncrypting
+            ? "encrypting..."
+            : hasEncFile && encFileOnly
             ? "load"
             : hasEncFile
             ? "encrypt/load"
