@@ -82,6 +82,9 @@ const NewFile: React.FC<NewFileProps> = ({
               className="bg-slate-100 dark:bg-slate-800 grow focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 pl-6 pr-4 py-2 rounded-full w-full"
               type="text"
               placeholder="path/to/dir (optional)"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               onChange={(event) => setDirPath(event.target.value)}
             />
           </div>
