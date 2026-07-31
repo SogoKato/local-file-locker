@@ -101,5 +101,6 @@ export const listEntries = async (path: string): Promise<Entry[]> => {
       });
     }
   }
+  ret.sort((a, b) => a.name.localeCompare(b.name));
   return ret;
 };
