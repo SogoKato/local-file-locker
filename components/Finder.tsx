@@ -73,8 +73,11 @@ const Finder: React.FC<FinderProps> = ({
         reader.readAsText(blob);
       }
     } else if (entry.kind === "directory") {
-      const subEntries = await listEntries(entry.path);
-      entry.children = subEntries;
+      if (entry.children !== undefined) {
+        entry.children = undefined;
+      } else {
+        entry.children = await listEntries(entry.path);
+      }
       setEntries([...entries]);
     }
   }, [entries, password, setEntries]);
