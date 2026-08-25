@@ -8,8 +8,9 @@ import {
   refreshEntries,
   Entry,
 } from "@/lib/opfs";
+import { getPreviewKind } from "@/lib/preview";
 import { decrypt } from "@/wasm-crypto/pkg/wasm_crypto";
-import { JSX, useCallback, useEffect, useMemo, useState } from "react";
+import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FinderProps = {
   className?: string;
@@ -27,6 +28,35 @@ const Finder: React.FC<FinderProps> = ({
   const [visible, setVisible] = useState<boolean>(false);
   const [preview, setPreview] = useState<JSX.Element>();
   const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
+
+  const revokePreviewObjectUrl = useCallback(() => {
+    if (previewObjectUrlRef.current) {
+      URL.revokeObjectURL(previewObjectUrlRef.current);
+      previewObjectUrlRef.current = null;
+    }
+  }, []);
+
+  const closePreview = useCallback(() => {
+    revokePreviewObjectUrl();
+    setVisible(false);
+  }, [revokePreviewObjectUrl]);
+
+  useEffect(() => () => revokePreviewObjectUrl(), [revokePreviewObjectUrl]);
+
+  const downloadEntry = async (entry: Entry) => {
+    if (entry.kind === "directory") return;
+    const url = URL.createObjectURL(
+      new Blob([entry.cipherData], { type: "application/octet-streams" })
+    );
+    const a = document.createElement("a");
+    document.body.appendChild(a);
+    a.download = `${entry.name}.enc`;
+    a.href = url;
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   const openEntry = useCallback(async (entry: Entry) => {
     if (entry.kind === "file") {
@@ -40,37 +70,107 @@ const Finder: React.FC<FinderProps> = ({
         }
         setEntries([...entries]);
       }
+
+      revokePreviewObjectUrl();
+
       const mimeType = getMimeType(entry.plainData);
-      const reader = new FileReader();
       const blob = new Blob([entry.plainData], { type: mimeType });
-      if (mimeType.startsWith("image/")) {
-        reader.onload = (event) => {
-          if (typeof event.target?.result === "string") {
-            setPreview(
-              <img
-                className="max-h-dvh max-w-dvw z-10"
-                alt={entry.name}
-                src={event.target.result}
-              />
-            );
-            setPreviewPath(entry.path);
-            setVisible(true);
-          }
-        };
-        reader.readAsDataURL(blob);
-      } else if (mimeType.startsWith("text/")) {
-        reader.onload = (event) => {
-          if (typeof event.target?.result === "string") {
-            setPreview(
-              <pre className="bg-slate-950 break-all max-h-full max-w-full overflow-x-scroll p-8 text-slate-50 text-wrap whitespace-pre-wrap z-10">
-                {event.target.result}
-              </pre>
-            );
-            setPreviewPath(entry.path);
-            setVisible(true);
-          }
-        };
-        reader.readAsText(blob);
+
+      switch (getPreviewKind(mimeType)) {
+        case "image":
+        case "svg": {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            if (typeof event.target?.result === "string") {
+              setPreview(
+                <img
+                  className="max-h-dvh max-w-dvw z-10"
+                  alt={entry.name}
+                  src={event.target.result}
+                />
+              );
+              setPreviewPath(entry.path);
+              setVisible(true);
+            }
+          };
+          reader.readAsDataURL(blob);
+          break;
+        }
+        case "text": {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            if (typeof event.target?.result === "string") {
+              setPreview(
+                <pre className="bg-slate-950 break-all max-h-full max-w-full overflow-x-scroll p-8 text-slate-50 text-wrap whitespace-pre-wrap z-10">
+                  {event.target.result}
+                </pre>
+              );
+              setPreviewPath(entry.path);
+              setVisible(true);
+            }
+          };
+          reader.readAsText(blob);
+          break;
+        }
+        case "audio": {
+          const url = URL.createObjectURL(blob);
+          previewObjectUrlRef.current = url;
+          setPreview(<audio className="z-10" controls src={url} />);
+          setPreviewPath(entry.path);
+          setVisible(true);
+          break;
+        }
+        case "video": {
+          const url = URL.createObjectURL(blob);
+          previewObjectUrlRef.current = url;
+          setPreview(
+            <video
+              className="max-h-dvh max-w-dvw z-10"
+              controls
+              src={url}
+            />
+          );
+          setPreviewPath(entry.path);
+          setVisible(true);
+          break;
+        }
+        case "pdf": {
+          const url = URL.createObjectURL(blob);
+          previewObjectUrlRef.current = url;
+          setPreview(
+            <iframe
+              className="bg-white h-[90dvh] w-[90dvw] z-10"
+              title={entry.name}
+              src={url}
+            />
+          );
+          setPreviewPath(entry.path);
+          setVisible(true);
+          break;
+        }
+        case "unsupported": {
+          setPreview(
+            <div className="bg-slate-950 max-w-md p-8 rounded text-slate-50 z-10">
+              <div className="font-semibold">{entry.name}</div>
+              <div className="text-slate-400 text-sm mt-1">
+                {entry.size.toLocaleString()} bytes
+              </div>
+              <div className="text-slate-400 text-sm">
+                {mimeType === "application/octet-stream" ? "unknown" : mimeType}
+              </div>
+              <p className="mt-4">No preview available for this file type.</p>
+              <button
+                className="bg-slate-700 hover:bg-violet-700 duration-300 font-semibold mt-4 px-4 py-2 rounded-full text-sm transition-all"
+                onClick={() => downloadEntry(entry)}
+              >
+                download
+              </button>
+            </div>
+          );
+          setPreviewPath(entry.path);
+          setVisible(true);
+          break;
+        }
       }
     } else if (entry.kind === "directory") {
       if (entry.children !== undefined) {
@@ -80,7 +180,7 @@ const Finder: React.FC<FinderProps> = ({
       }
       setEntries([...entries]);
     }
-  }, [entries, password, setEntries]);
+  }, [entries, password, setEntries, revokePreviewObjectUrl]);
 
   const previewFiles = useMemo(() => {
     const flattenFiles = (targetEntries: Entry[]): Entry[] =>
@@ -114,7 +214,7 @@ const Finder: React.FC<FinderProps> = ({
     if (!visible) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setVisible(false);
+        closePreview();
       } else if (event.key === "ArrowLeft") {
         if (movePreview(-1)) event.preventDefault();
       } else if (event.key === "ArrowRight") {
@@ -125,21 +225,7 @@ const Finder: React.FC<FinderProps> = ({
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [visible, movePreview]);
-
-  const downloadEntry = async (entry: Entry) => {
-    if (entry.kind === "directory") return;
-    const url = URL.createObjectURL(
-      new Blob([entry.cipherData], { type: "application/octet-streams" })
-    );
-    const a = document.createElement("a");
-    document.body.appendChild(a);
-    a.download = `${entry.name}.enc`;
-    a.href = url;
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
+  }, [visible, movePreview, closePreview]);
 
   const deleteEntry = async (entry: Entry) => {
     if (!confirm(`Are you sure want to delete "${entry.path}"?`)) return;
@@ -226,7 +312,7 @@ const Finder: React.FC<FinderProps> = ({
       >
         <div
           className="absolute bg-black h-full opacity-50 w-full z-0"
-          onClick={() => setVisible(false)}
+          onClick={closePreview}
         />
         {previewFiles.length > 1 ? (
           <>
@@ -262,7 +348,7 @@ const Finder: React.FC<FinderProps> = ({
         <button
           type="button"
           className="absolute bg-red-500 duration-300 h-12 hover:bg-red-600 m-1 right-0 rounded-full text-3xl text-white top-0 transition-colors w-12 z-30"
-          onClick={() => setVisible(false)}
+          onClick={closePreview}
           aria-label="Close preview"
         >
           ×
