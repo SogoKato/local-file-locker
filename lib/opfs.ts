@@ -104,3 +104,22 @@ export const listEntries = async (path: string): Promise<Entry[]> => {
   ret.sort((a, b) => a.name.localeCompare(b.name));
   return ret;
 };
+
+export const refreshEntries = async (
+  path: string,
+  oldEntries: Entry[]
+): Promise<Entry[]> => {
+  const freshEntries = await listEntries(path);
+  return Promise.all(
+    freshEntries.map(async (entry) => {
+      if (entry.kind !== "directory") return entry;
+      const oldEntry = oldEntries.find(
+        (e) => e.kind === "directory" && e.path === entry.path
+      ) as DirEntry | undefined;
+      if (oldEntry?.children !== undefined) {
+        entry.children = await refreshEntries(entry.path, oldEntry.children);
+      }
+      return entry;
+    })
+  );
+};

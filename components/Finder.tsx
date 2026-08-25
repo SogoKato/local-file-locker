@@ -1,7 +1,13 @@
 "use client";
 
 import { getMimeType } from "@/lib/mime";
-import { deleteFile, deleteDir, listEntries, Entry } from "@/lib/opfs";
+import {
+  deleteFile,
+  deleteDir,
+  listEntries,
+  refreshEntries,
+  Entry,
+} from "@/lib/opfs";
 import { decrypt } from "@/wasm-crypto/pkg/wasm_crypto";
 import { JSX, useCallback, useEffect, useMemo, useState } from "react";
 
@@ -139,7 +145,7 @@ const Finder: React.FC<FinderProps> = ({
     } else if (entry.kind === "directory") {
       await deleteDir(entry.path);
     }
-    listEntries("").then((rootEntries) => setEntries(rootEntries));
+    refreshEntries("", entries).then((rootEntries) => setEntries(rootEntries));
   };
 
   const makeEntryList = (accumulator: JSX.Element[], entry: Entry) => {

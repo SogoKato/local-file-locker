@@ -1,5 +1,5 @@
 "use client";
-import { writeFile, listEntries, Entry, FileEntry } from "@/lib/opfs";
+import { writeFile, refreshEntries, Entry, FileEntry } from "@/lib/opfs";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { encrypt } from "@/wasm-crypto/pkg/wasm_crypto";
 
@@ -82,7 +82,9 @@ const NewFile: React.FC<NewFileProps> = ({
         await writeFile(entry.path, entry.cipherData);
       }
 
-      await listEntries("").then((rootEntries) => setEntries(rootEntries));
+      await refreshEntries("", entries).then((rootEntries) =>
+        setEntries(rootEntries)
+      );
 
       if (fileInputRef.current) fileInputRef.current.value = "";
       setNewFiles([]);
