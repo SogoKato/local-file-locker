@@ -9,7 +9,7 @@ import {
   Entry,
 } from "@/lib/opfs";
 import { getPreviewKind } from "@/lib/preview";
-import { decrypt } from "@/wasm-crypto/pkg/wasm_crypto";
+import { decrypt } from "@/lib/crypto";
 import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FinderProps = {

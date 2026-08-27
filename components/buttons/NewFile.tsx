@@ -1,7 +1,7 @@
 "use client";
 import { writeFile, refreshEntries, Entry, FileEntry } from "@/lib/opfs";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { encrypt } from "@/wasm-crypto/pkg/wasm_crypto";
+import { encrypt } from "@/lib/crypto";
 
 type NewFileProps = {
   className?: string;

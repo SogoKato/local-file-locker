@@ -1,7 +1,6 @@
 "use client";
 import NewFile from "@/components/buttons/NewFile";
 import { useEffect, useState } from "react";
-import init from "@/wasm-crypto/pkg/wasm_crypto";
 import Finder from "@/components/Finder";
 import { Entry, listEntries } from "@/lib/opfs";
 
@@ -11,7 +10,6 @@ export default function Home() {
   const [descriptionOpen, setDescriptionOpen] = useState<boolean>(true);
 
   useEffect(() => {
-    init();
     listEntries("").then((rootEntries) => setEntries(rootEntries));
   }, []);
 
@@ -44,7 +42,8 @@ export default function Home() {
                   Origin Private File System
                 </a>
                 . Encryption is performed using symmetric encryption (AES-GCM
-                mode), and the process is executed via WASM.
+                mode), and the process is executed via the browser&apos;s
+                native Web Crypto API.
               </p>
               <p>
                 The source code is available on{" "}

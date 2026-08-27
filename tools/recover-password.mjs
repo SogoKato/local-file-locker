@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Recovery CLI for local-file-locker .enc files.
 //
-// Format (must match wasm-crypto/src/lib.rs):
+// Format (must match lib/crypto.ts and wasm-crypto/src/lib.rs):
 //   file = nonce(12 bytes) || ciphertext || auth_tag(16 bytes)
 //   key  = SHA-256(password utf8 bytes), used as AES-256-GCM key
 //
