@@ -1,9 +1,18 @@
 #!/usr/bin/env node
-// Recovery CLI for local-file-locker .enc files.
+// Recovery CLI for local-file-locker .enc/.lfl files. Supports two formats
+// (must match lib/crypto.ts and lib/vault.ts):
 //
-// Format (must match lib/crypto.ts and wasm-crypto/src/lib.rs):
+// v1 (legacy .enc, no header):
 //   file = nonce(12 bytes) || ciphertext || auth_tag(16 bytes)
-//   key  = SHA-256(password utf8 bytes), used as AES-256-GCM key
+//   key  = SHA-256(password utf8 bytes), no salt, no AAD
+//
+// v2 container (.lfl, exported from the app's main vault):
+//   file   = magic("LFLF") || version(1) || opaqueId(36) || contentFormat(1)
+//            || nameBlobLen(4, BE) || nameBlob || contentBlob
+//   blob   = magic("LFL2") || salt(16) || iterations(4, BE) || nonce(12)
+//            || ciphertext_and_tag
+//   key    = PBKDF2-HMAC-SHA256(password utf8 bytes, salt, iterations, 32 bytes)
+//   aad    = "LFAD" || aadVersion(1) || roleTag(1: 0x01=name, 0x02=content) || opaqueId
 //
 // This tool takes a password you *think* you typed and brute-forces
 // plausible typo variants of it (fat-finger substitutions, dropped/doubled
@@ -11,16 +20,20 @@
 // successfully authenticates against the file's GCM tag. Because GCM
 // verifies a MAC, a successful decrypt is a correct password with
 // overwhelming probability -- there are no false positives to sift through.
+//
+// v2 candidates are far more expensive to try than v1 (600,000 PBKDF2
+// iterations per guess vs. a single SHA-256), so this tool prints a timing
+// estimate before starting the sweep on a .lfl file.
 
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
 function printHelp() {
-  console.log(`recover-password.mjs - brute-force typo recovery for local-file-locker .enc files
+  console.log(`recover-password.mjs - brute-force typo recovery for local-file-locker .enc/.lfl files
 
 Usage:
-  node tools/recover-password.mjs <input.enc> <password-guess> [options]
+  node tools/recover-password.mjs <input.enc|input.lfl> <password-guess> [options]
 
 Options:
   -o, --output <path>       Where to write the recovered plaintext.
@@ -225,23 +238,121 @@ function generateCandidates(seeds, depth, max) {
 }
 
 // ---------------------------------------------------------------------------
-// Decryption (must match wasm-crypto/src/lib.rs::decrypt)
+// Decryption (must match lib/crypto.ts and lib/vault.ts)
 // ---------------------------------------------------------------------------
 
-function tryDecrypt(password, fileBuffer) {
-  const key = crypto.createHash("sha256").update(password, "utf8").digest();
-  const nonce = fileBuffer.subarray(0, 12);
-  const rest = fileBuffer.subarray(12);
-  if (rest.length < 16) return null;
+const V1_MIN_LEN = 12 + 16;
+
+const V2_MAGIC = Buffer.from([0x4c, 0x46, 0x4c, 0x32]); // "LFL2"
+const V2_HEADER_LEN = 4 + 16 + 4 + 12; // magic + salt + iterations + nonce
+
+const CONTAINER_MAGIC = Buffer.from([0x4c, 0x46, 0x4c, 0x46]); // "LFLF"
+const OPAQUE_ID_LEN = 36;
+const CONTAINER_HEADER_LEN = 4 + 1 + OPAQUE_ID_LEN + 1 + 4; // 46
+const CONTENT_FORMAT_RAW = 0x02;
+
+const AAD_MAGIC = Buffer.from([0x4c, 0x46, 0x41, 0x44]); // "LFAD"
+const AAD_VERSION = 1;
+const AAD_ROLE_NAME = 0x01;
+const AAD_ROLE_CONTENT = 0x02;
+
+function buildAad(opaqueId, role) {
+  return Buffer.concat([
+    AAD_MAGIC,
+    Buffer.from([AAD_VERSION, role === "name" ? AAD_ROLE_NAME : AAD_ROLE_CONTENT]),
+    Buffer.from(opaqueId, "utf8"),
+  ]);
+}
+
+function isV2Blob(buf) {
+  return buf.length >= 4 && buf.subarray(0, 4).equals(V2_MAGIC);
+}
+
+// Reads the salt/iterations straight out of a v2 blob's own (unencrypted)
+// header -- no password needed. Used only to give an honest time estimate.
+function peekV2Params(buf) {
+  if (!isV2Blob(buf)) return null;
+  return { salt: buf.subarray(4, 20), iterations: buf.readUInt32BE(20) };
+}
+
+function tryDecryptV2Blob(password, blobBuffer, aad) {
+  if (!isV2Blob(blobBuffer) || blobBuffer.length < V2_HEADER_LEN + 16) return null;
+  const salt = blobBuffer.subarray(4, 20);
+  const iterations = blobBuffer.readUInt32BE(20);
+  const nonce = blobBuffer.subarray(24, 36);
+  const rest = blobBuffer.subarray(36);
   const tag = rest.subarray(rest.length - 16);
   const ciphertext = rest.subarray(0, rest.length - 16);
+  const key = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256");
   try {
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, nonce);
+    decipher.setAAD(aad);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   } catch {
     return null;
   }
+}
+
+function isLflContainer(buf) {
+  return buf.length >= 4 && buf.subarray(0, 4).equals(CONTAINER_MAGIC);
+}
+
+function parseContainerHeader(buf) {
+  if (buf.length < CONTAINER_HEADER_LEN || !isLflContainer(buf)) return null;
+  let offset = 4 + 1; // magic + version
+  const opaqueId = buf.subarray(offset, offset + OPAQUE_ID_LEN).toString("utf8");
+  offset += OPAQUE_ID_LEN;
+  const formatByte = buf[offset];
+  offset += 1;
+  const contentFormat = formatByte === CONTENT_FORMAT_RAW ? "raw-passthrough" : "v2-framed";
+  const nameBlobLen = buf.readUInt32BE(offset);
+  return { opaqueId, contentFormat, nameBlobLen };
+}
+
+function detectFormat(fileBuffer) {
+  return isLflContainer(fileBuffer) ? "lfl" : "v1";
+}
+
+// Returns { content: Buffer, name?: string } on success, null on failure
+// (wrong password, or -- for raw-passthrough .lfl content -- "can't be
+// decrypted in-app at all", which the caller reports distinctly).
+function tryDecrypt(password, fileBuffer, format) {
+  if (format === "v1") {
+    const key = crypto.createHash("sha256").update(password, "utf8").digest();
+    const nonce = fileBuffer.subarray(0, 12);
+    const rest = fileBuffer.subarray(12);
+    if (rest.length < 16) return null;
+    const tag = rest.subarray(rest.length - 16);
+    const ciphertext = rest.subarray(0, rest.length - 16);
+    try {
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, nonce);
+      decipher.setAuthTag(tag);
+      return { content: Buffer.concat([decipher.update(ciphertext), decipher.final()]) };
+    } catch {
+      return null;
+    }
+  }
+
+  const header = parseContainerHeader(fileBuffer);
+  if (!header) return null;
+  const nameBlob = fileBuffer.subarray(CONTAINER_HEADER_LEN, CONTAINER_HEADER_LEN + header.nameBlobLen);
+  const namePlain = tryDecryptV2Blob(password, nameBlob, buildAad(header.opaqueId, "name"));
+  if (namePlain === null) return null;
+  const name = namePlain.toString("utf8");
+
+  if (header.contentFormat !== "v2-framed") {
+    // Password confirmed via the name blob; content was imported as-is and
+    // was never encrypted under this password to begin with (same as the
+    // app's own behavior for raw-passthrough .enc imports).
+    const raw = fileBuffer.subarray(CONTAINER_HEADER_LEN + header.nameBlobLen);
+    return { content: raw, name, raw: true };
+  }
+
+  const contentBlob = fileBuffer.subarray(CONTAINER_HEADER_LEN + header.nameBlobLen);
+  const contentPlain = tryDecryptV2Blob(password, contentBlob, buildAad(header.opaqueId, "content"));
+  if (contentPlain === null) return null;
+  return { content: contentPlain, name };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,8 +377,16 @@ function main() {
     console.error(`failed to read input file: ${e.message}`);
     process.exit(1);
   }
-  if (fileBuffer.length < 12 + 16) {
-    console.error("input file is too short to be a valid .enc file (need at least 28 bytes)");
+
+  const format = detectFormat(fileBuffer);
+  console.error(`detected format: ${format === "lfl" ? "v2 (.lfl container)" : "v1 (legacy .enc)"}`);
+
+  if (format === "v1" && fileBuffer.length < V1_MIN_LEN) {
+    console.error(`input file is too short to be a valid v1 .enc file (need at least ${V1_MIN_LEN} bytes)`);
+    process.exit(1);
+  }
+  if (format === "lfl" && !parseContainerHeader(fileBuffer)) {
+    console.error("input file has the .lfl magic but is truncated or corrupt");
     process.exit(1);
   }
 
@@ -283,6 +402,28 @@ function main() {
   const ordered = [...seeds, ...candidates].filter((c, i, arr) => arr.indexOf(c) === i);
 
   console.error(`generated ${ordered.length} candidate password(s).`);
+
+  if (format === "lfl") {
+    const header = parseContainerHeader(fileBuffer);
+    const nameBlob = fileBuffer.subarray(
+      CONTAINER_HEADER_LEN,
+      CONTAINER_HEADER_LEN + header.nameBlobLen
+    );
+    const params = peekV2Params(nameBlob);
+    if (params) {
+      const t0 = Date.now();
+      crypto.pbkdf2Sync("timing-probe", params.salt, params.iterations, 32, "sha256");
+      const perCandidateMs = Math.max(1, Date.now() - t0);
+      const estimateSec = ((perCandidateMs * ordered.length) / 1000).toFixed(1);
+      console.error(
+        `v2 files use ${params.iterations} PBKDF2 iterations (~${perCandidateMs}ms/candidate on this machine).`
+      );
+      console.error(
+        `estimated time for ${ordered.length} candidates: ~${estimateSec}s. If that's too slow, rerun with a smaller --max/--depth.`
+      );
+    }
+  }
+
   if (args.dryRun) {
     process.exit(0);
   }
@@ -295,14 +436,23 @@ function main() {
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       console.error(`  ...tried ${tried}/${ordered.length} (${elapsed}s)`);
     }
-    const plain = tryDecrypt(candidate, fileBuffer);
-    if (plain !== null) {
+    const result = tryDecrypt(candidate, fileBuffer, format);
+    if (result !== null) {
       const outputPath =
         args.output ??
-        (inputPath.endsWith(".enc") ? inputPath.slice(0, -4) : `${inputPath}.dec`);
-      fs.writeFileSync(outputPath, plain);
+        result.name ??
+        (inputPath.endsWith(".enc") || inputPath.endsWith(".lfl")
+          ? inputPath.slice(0, -4)
+          : `${inputPath}.dec`);
+      fs.writeFileSync(outputPath, result.content);
       console.log(`SUCCESS after ${tried} attempt(s).`);
       console.log(`recovered password: ${JSON.stringify(candidate)}`);
+      if (result.name) console.log(`recovered filename: ${JSON.stringify(result.name)}`);
+      if (result.raw) {
+        console.log(
+          "note: content was imported as raw-passthrough and was never encrypted under this password; the bytes written out are exactly what was originally imported."
+        );
+      }
       console.log(`plaintext written to: ${path.resolve(outputPath)}`);
       process.exit(0);
     }
