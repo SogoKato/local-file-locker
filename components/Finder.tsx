@@ -3,6 +3,7 @@
 import { getMimeType } from "@/lib/mime";
 import { getPreviewKind } from "@/lib/preview";
 import {
+  collectFolderForDownload,
   deleteEntry as vaultDeleteEntry,
   exportEntry,
   listEntries,
@@ -11,6 +12,7 @@ import {
   VaultEntry,
   VaultFileEntry,
 } from "@/lib/vault";
+import { downloadZip } from "client-zip";
 import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FinderProps = {
@@ -32,6 +34,7 @@ const Finder: React.FC<FinderProps> = ({
   const [visible, setVisible] = useState<boolean>(false);
   const [preview, setPreview] = useState<JSX.Element>();
   const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [isZipping, setIsZipping] = useState<boolean>(false);
   const previewObjectUrlRef = useRef<string | null>(null);
 
   const revokePreviewObjectUrl = useCallback(() => {
@@ -60,6 +63,36 @@ const Finder: React.FC<FinderProps> = ({
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  };
+
+  // Zips a folder's contents exactly as stored on disk (still encrypted) -
+  // no password needed, so locked entries are included too, just named
+  // after their opaque id instead of their real name.
+  const downloadFolderAsZip = async (opaquePath: string[], zipBaseName: string) => {
+    setIsZipping(true);
+    try {
+      const items = await collectFolderForDownload(opaquePath, password);
+      if (items.length === 0) {
+        alert("This folder has no files to download.");
+        return;
+      }
+      const blob = await downloadZip(
+        items.map((item) => ({ name: item.relativePath, input: item.bytes }))
+      ).blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      document.body.appendChild(a);
+      a.download = `${zipBaseName}.zip`;
+      a.href = url;
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      alert("failed to build the zip download!");
+    } finally {
+      setIsZipping(false);
+    }
   };
 
   const showUnsupportedPreview = (entry: VaultFileEntry, message: string, mimeType?: string) => {
@@ -279,6 +312,13 @@ const Finder: React.FC<FinderProps> = ({
       ) : (
         <div className="flex grow items-center justify-end">
           <button
+            className="bg-slate-300 dark:bg-slate-600 disabled:opacity-50 hover:bg-violet-400 hover:dark:bg-violet-700 duration-300 font-semibold ml-2 px-4 py-2 rounded-full hover:text-violet-700 hover:dark:text-violet-100 text-sm transition-all"
+            disabled={isZipping}
+            onClick={() => downloadFolderAsZip(entry.opaquePath, entry.name ?? entry.opaqueId)}
+          >
+            download folder
+          </button>
+          <button
             className="bg-slate-300 dark:bg-slate-600 hover:bg-red-300 hover:dark:bg-red-600 duration-300 font-semibold ml-2 px-4 py-2 rounded-full hover:text-red-700 hover:dark:text-red-100 text-sm transition-all"
             onClick={() => deleteEntry(entry)}
           >
@@ -324,6 +364,17 @@ const Finder: React.FC<FinderProps> = ({
 
   return (
     <div className={className}>
+      {entries.length > 0 ? (
+        <div className="flex justify-end mb-2">
+          <button
+            className="bg-slate-300 dark:bg-slate-600 disabled:opacity-50 hover:bg-violet-400 hover:dark:bg-violet-700 duration-300 font-semibold px-4 py-2 rounded-full hover:text-violet-700 hover:dark:text-violet-100 text-sm transition-all"
+            disabled={isZipping}
+            onClick={() => downloadFolderAsZip([], "vault")}
+          >
+            {isZipping ? "zipping..." : "download all (.zip)"}
+          </button>
+        </div>
+      ) : null}
       <ul>{entryList}</ul>
       <div
         className={

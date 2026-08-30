@@ -417,6 +417,36 @@ export const exportEntry = async (
   };
 };
 
+// Recursively gathers every file under opaquePath as raw, still-encrypted
+// bytes (same as exportEntry, just for a whole subtree at once) - no
+// password-gated decryption happens here, so locked entries are included
+// too, just under an opaqueId-based name instead of their real one. Used
+// for "download this folder as a zip".
+export type DownloadItem = { relativePath: string; bytes: Uint8Array };
+
+export const collectFolderForDownload = async (
+  opaquePath: string[],
+  password: string
+): Promise<DownloadItem[]> => {
+  const entries = await listEntries(opaquePath, password);
+  const items: DownloadItem[] = [];
+
+  for (const entry of entries) {
+    if (entry.kind === "file") {
+      const { bytes, filename } = await exportEntry(entry);
+      items.push({ relativePath: filename, bytes });
+    } else {
+      const dirName = entry.name ?? entry.opaqueId;
+      const children = await collectFolderForDownload(entry.opaquePath, password);
+      for (const child of children) {
+        items.push({ relativePath: `${dirName}/${child.relativePath}`, bytes: child.bytes });
+      }
+    }
+  }
+
+  return items;
+};
+
 export const deleteEntry = async (entry: VaultEntry): Promise<void> => {
   await opfsStore.removeEntry(entry.opaquePath, { recursive: entry.kind === "directory" });
   clearNameCache(entry.opaqueId);

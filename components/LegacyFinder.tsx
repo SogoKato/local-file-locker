@@ -10,6 +10,7 @@ import {
 } from "@/lib/opfs";
 import { getPreviewKind } from "@/lib/preview";
 import { decryptLegacy } from "@/lib/crypto";
+import { downloadZip } from "client-zip";
 import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type LegacyFinderProps = {
@@ -28,6 +29,7 @@ const LegacyFinder: React.FC<LegacyFinderProps> = ({
   const [visible, setVisible] = useState<boolean>(false);
   const [preview, setPreview] = useState<JSX.Element>();
   const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [isZipping, setIsZipping] = useState<boolean>(false);
   const previewObjectUrlRef = useRef<string | null>(null);
 
   const revokePreviewObjectUrl = useCallback(() => {
@@ -56,6 +58,69 @@ const LegacyFinder: React.FC<LegacyFinderProps> = ({
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  };
+
+  // Recursively decrypts every file under `path` with the current
+  // password, for the "download folder (decrypted)" migration helper.
+  // Files that don't decrypt with this password are skipped and reported,
+  // rather than aborting the whole folder.
+  const collectLegacyForDownload = async (
+    path: string
+  ): Promise<{ items: { relativePath: string; bytes: Uint8Array }[]; skipped: string[] }> => {
+    const targetEntries = await listEntries(path);
+    const items: { relativePath: string; bytes: Uint8Array }[] = [];
+    const skipped: string[] = [];
+    for (const entry of targetEntries) {
+      if (entry.kind === "file") {
+        try {
+          const plain = await decryptLegacy(password, entry.cipherData);
+          items.push({ relativePath: entry.path, bytes: plain });
+        } catch {
+          skipped.push(entry.path);
+        }
+      } else {
+        const nested = await collectLegacyForDownload(entry.path);
+        items.push(...nested.items);
+        skipped.push(...nested.skipped);
+      }
+    }
+    return { items, skipped };
+  };
+
+  const downloadFolderAsZip = async (path: string, zipBaseName: string) => {
+    setIsZipping(true);
+    try {
+      const { items, skipped } = await collectLegacyForDownload(path);
+      if (items.length === 0) {
+        alert(
+          skipped.length > 0
+            ? `No files could be decrypted with the current password (${skipped.length} skipped).`
+            : "This folder has no files to download."
+        );
+        return;
+      }
+      const blob = await downloadZip(
+        items.map((item) => ({ name: item.relativePath, input: item.bytes }))
+      ).blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      document.body.appendChild(a);
+      a.download = `${zipBaseName}.zip`;
+      a.href = url;
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      if (skipped.length > 0) {
+        alert(
+          `${skipped.length} file(s) skipped (could not decrypt with the current password):\n${skipped.join("\n")}`
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      alert("failed to build the zip download!");
+    } finally {
+      setIsZipping(false);
+    }
   };
 
   const openEntry = useCallback(async (entry: Entry) => {
@@ -261,6 +326,13 @@ const LegacyFinder: React.FC<LegacyFinderProps> = ({
       ) : (
         <div className="flex grow items-center justify-end">
           <button
+            className="bg-slate-300 dark:bg-slate-600 disabled:opacity-50 hover:bg-violet-400 hover:dark:bg-violet-700 duration-300 font-semibold ml-2 px-4 py-2 rounded-full hover:text-violet-700 hover:dark:text-violet-100 text-sm transition-all"
+            disabled={isZipping}
+            onClick={() => downloadFolderAsZip(entry.path, entry.name)}
+          >
+            download folder
+          </button>
+          <button
             className="bg-slate-300 dark:bg-slate-600 hover:bg-red-300 hover:dark:bg-red-600 duration-300 font-semibold ml-2 px-4 py-2 rounded-full hover:text-red-700 hover:dark:text-red-100 text-sm transition-all"
             onClick={() => deleteEntry(entry)}
           >
@@ -303,6 +375,17 @@ const LegacyFinder: React.FC<LegacyFinderProps> = ({
 
   return (
     <div className={className}>
+      {entries.length > 0 ? (
+        <div className="flex justify-end mb-2">
+          <button
+            className="bg-slate-300 dark:bg-slate-600 disabled:opacity-50 hover:bg-violet-400 hover:dark:bg-violet-700 duration-300 font-semibold px-4 py-2 rounded-full hover:text-violet-700 hover:dark:text-violet-100 text-sm transition-all"
+            disabled={isZipping}
+            onClick={() => downloadFolderAsZip("", "legacy")}
+          >
+            {isZipping ? "zipping..." : "download all (decrypted, .zip)"}
+          </button>
+        </div>
+      ) : null}
       <ul>{entryList}</ul>
       <div
         className={
