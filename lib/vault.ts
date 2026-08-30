@@ -18,6 +18,12 @@ import * as opfsStore from "@/lib/opfsStore";
 
 export type AadRole = "name" | "content";
 
+// Every directory holds its own encrypted real name in a sentinel file
+// literally called "name" (see the directory layout comment below) - this
+// can never collide with a real child's opaque id, since those are always
+// crypto.randomUUID() strings and never equal this literal.
+const DIR_NAME_FILE = "name";
+
 const AAD_MAGIC = new Uint8Array([0x4c, 0x46, 0x41, 0x44]); // "LFAD"
 const AAD_VERSION = 1;
 const AAD_ROLE_NAME = 0x01;
@@ -217,12 +223,13 @@ export const listEntries = async (
   const entries: VaultEntry[] = [];
 
   for (const child of children) {
+    if (child.kind === "file" && child.id === DIR_NAME_FILE) continue; // this dir's own sentinel, not a child
     const childPath = [...opaquePath, child.id];
 
     if (child.kind === "directory") {
       let name: string | null = null;
       try {
-        const nameFile = await opfsStore.readFile([...childPath, "name"]);
+        const nameFile = await opfsStore.readFile([...childPath, DIR_NAME_FILE]);
         const nameBlobBytes = new Uint8Array(await nameFile.arrayBuffer());
         const res = await resolveName(child.id, nameBlobBytes, password);
         if (res.ok) name = res.name;
@@ -251,7 +258,8 @@ export const listEntries = async (
         contentFormat: header.contentFormat,
         plainData: null,
       });
-    } catch {
+    } catch (e) {
+      console.error("listEntries: failed to read file entry", childPath.join("/"), e);
       entries.push({
         kind: "file",
         opaqueId: child.id,
@@ -438,7 +446,7 @@ export const resolveOrCreateDirPath = async (
     for (const child of children) {
       if (child.kind !== "directory") continue;
       try {
-        const nameFile = await opfsStore.readFile([...opaquePath, child.id, "name"]);
+        const nameFile = await opfsStore.readFile([...opaquePath, child.id, DIR_NAME_FILE]);
         const nameBlobBytes = new Uint8Array(await nameFile.arrayBuffer());
         const res = await resolveName(child.id, nameBlobBytes, password);
         if (res.ok && res.name === segment) {
@@ -458,7 +466,7 @@ export const resolveOrCreateDirPath = async (
         buildAad(matchId, "name")
       );
       await opfsStore.ensureDir([...opaquePath, matchId]);
-      await opfsStore.writeFile([...opaquePath, matchId, "name"], nameBlob);
+      await opfsStore.writeFile([...opaquePath, matchId, DIR_NAME_FILE], nameBlob);
       primeNameCache(matchId, password, segment);
     }
 
