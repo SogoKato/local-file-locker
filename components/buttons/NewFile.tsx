@@ -1,20 +1,27 @@
 "use client";
-import { writeFile, refreshEntries, Entry, FileEntry } from "@/lib/opfs";
+import {
+  VaultEntry,
+  importExportedFile,
+  refreshEntries,
+  resolveOrCreateDirPath,
+  writeNewFile,
+  writeRawImportedFile,
+} from "@/lib/vault";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { encrypt } from "@/lib/crypto";
 
 type NewFileProps = {
   className?: string;
-  entries: Entry[];
-  setEntries: (v: Entry[]) => void;
+  entries: VaultEntry[];
+  setEntries: (v: VaultEntry[]) => void;
   password: string;
 };
 
-const collectDirPaths = (entries: Entry[]): string[] =>
+const collectDirPaths = (entries: VaultEntry[], prefix: string): string[] =>
   entries.flatMap((entry) => {
-    if (entry.kind !== "directory") return [];
-    const childPaths = entry.children ? collectDirPaths(entry.children) : [];
-    return [entry.path, ...childPaths];
+    if (entry.kind !== "directory" || entry.name === null) return [];
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const childPaths = entry.children ? collectDirPaths(entry.children, path) : [];
+    return [path, ...childPaths];
   });
 
 const NewFile: React.FC<NewFileProps> = ({
@@ -25,14 +32,15 @@ const NewFile: React.FC<NewFileProps> = ({
 }) => {
   const [newFiles, setNewFiles] = useState<File[]>([]);
   const [hasEncFile, setHasEncFile] = useState<boolean>(false);
-  const [encFileOnly, setEncFileOnly] = useState<boolean>(false);
+  const [hasLflFile, setHasLflFile] = useState<boolean>(false);
+  const [lflOnly, setLflOnly] = useState<boolean>(false);
   const [dirPath, setDirPath] = useState<string>("");
   const [isEncrypting, setIsEncrypting] = useState<boolean>(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled =
-    newFiles.length === 0 || (password === "" && !encFileOnly) || isEncrypting;
-  const dirPaths = useMemo(() => collectDirPaths(entries), [entries]);
+    newFiles.length === 0 || (password === "" && !lflOnly) || isEncrypting;
+  const dirPaths = useMemo(() => collectDirPaths(entries, ""), [entries]);
 
   useEffect(() => {
     if (!successMessage) return;
@@ -44,57 +52,48 @@ const NewFile: React.FC<NewFileProps> = ({
     const files = Array.from(event.currentTarget.files ?? []);
     setNewFiles(files);
     const encFiles = files.filter((f) => f.name.endsWith(".enc"));
+    const lflFiles = files.filter((f) => f.name.endsWith(".lfl"));
     setHasEncFile(encFiles.length > 0);
-    setEncFileOnly(encFiles.length === files.length);
+    setHasLflFile(lflFiles.length > 0);
+    setLflOnly(files.length > 0 && lflFiles.length === files.length);
   };
 
   const encryptFiles = async () => {
     setIsEncrypting(true);
     setSuccessMessage(null);
     try {
-      const newEntries: FileEntry[] = await Promise.all(
-        Array.from(newFiles).map(async (file) => {
-          if (file.name.endsWith(".enc")) {
-            const nameWithoutEnc = file.name.replace(new RegExp(".enc$"), "");
-            return {
-              kind: "file",
-              name: file.name,
-              path: `${dirPath}/${nameWithoutEnc}`,
-              size: file.size,
-              plainData: null,
-              cipherData: new Uint8Array(await file.arrayBuffer()),
-            };
-          }
-          const plainData = new Uint8Array(await file.arrayBuffer());
-          return {
-            kind: "file",
-            name: file.name,
-            path: `${dirPath}/${file.name}`,
-            size: file.size,
-            plainData: plainData,
-            cipherData: await encrypt(password, plainData),
-          };
-        })
-      );
+      const segments = dirPath.split("/").filter((s) => s.trim() !== "");
+      const parentPath = await resolveOrCreateDirPath(segments, password);
 
-      for (const entry of newEntries) {
-        if (!entry.cipherData) throw new Error("cipher data is empty");
-        await writeFile(entry.path, entry.cipherData);
+      for (const file of newFiles) {
+        if (file.name.endsWith(".lfl")) {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          await importExportedFile(parentPath, bytes);
+        } else if (file.name.endsWith(".enc")) {
+          const nameWithoutExt = file.name.replace(/\.enc$/, "");
+          const rawBytes = new Uint8Array(await file.arrayBuffer());
+          await writeRawImportedFile(parentPath, nameWithoutExt, rawBytes, password);
+        } else {
+          const plainData = new Uint8Array(await file.arrayBuffer());
+          await writeNewFile(parentPath, file.name, plainData, password);
+        }
       }
 
-      await refreshEntries("", entries).then((rootEntries) =>
-        setEntries(rootEntries)
-      );
+      const rootEntries = await refreshEntries([], password, entries);
+      setEntries(rootEntries);
 
+      const count = newFiles.length;
       if (fileInputRef.current) fileInputRef.current.value = "";
       setNewFiles([]);
       setHasEncFile(false);
-      setEncFileOnly(false);
+      setHasLflFile(false);
+      setLflOnly(false);
       setSuccessMessage(
-        `✅ ${newEntries.length} file${
-          newEntries.length === 1 ? "" : "s"
-        } saved successfully.`
+        `✅ ${count} file${count === 1 ? "" : "s"} saved successfully.`
       );
+    } catch (e) {
+      console.error(e);
+      alert(e instanceof Error ? e.message : "failed to save file(s)!");
     } finally {
       setIsEncrypting(false);
     }
@@ -135,7 +134,15 @@ const NewFile: React.FC<NewFileProps> = ({
         </label>
         {hasEncFile ? (
           <div>
-            ℹ️ <code>.enc</code> file(s) are loaded without encryption.
+            ℹ️ <code>.enc</code> file(s): content is stored as-is and cannot
+            be previewed in-app, but the filename will still be encrypted
+            with your password.
+          </div>
+        ) : null}
+        {hasLflFile ? (
+          <div>
+            ℹ️ <code>.lfl</code> file(s) previously exported from this app
+            will be restored as-is.
           </div>
         ) : null}
         {successMessage ? (
@@ -152,9 +159,9 @@ const NewFile: React.FC<NewFileProps> = ({
         >
           {isEncrypting
             ? "encrypting..."
-            : hasEncFile && encFileOnly
+            : lflOnly
             ? "load"
-            : hasEncFile
+            : hasEncFile || hasLflFile
             ? "encrypt/load"
             : "encrypt"}
         </button>

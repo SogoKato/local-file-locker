@@ -2,16 +2,24 @@
 import NewFile from "@/components/buttons/NewFile";
 import { useEffect, useState } from "react";
 import Finder from "@/components/Finder";
-import { Entry, listEntries } from "@/lib/opfs";
+import Link from "next/link";
+import { VaultEntry, refreshEntries } from "@/lib/vault";
 
 export default function Home() {
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [password, setPassword] = useState<string>("");
+  const [debouncedPassword, setDebouncedPassword] = useState<string>("");
   const [descriptionOpen, setDescriptionOpen] = useState<boolean>(true);
 
   useEffect(() => {
-    listEntries("").then((rootEntries) => setEntries(rootEntries));
-  }, []);
+    const timer = setTimeout(() => setDebouncedPassword(password), 500);
+    return () => clearTimeout(timer);
+  }, [password]);
+
+  useEffect(() => {
+    refreshEntries([], debouncedPassword, entries).then(setEntries);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedPassword]);
 
   return (
     <div>
@@ -32,8 +40,8 @@ export default function Home() {
             <div className="overflow-y-hidden">
               <p className="mb-1 mt-2">
                 Local File Locker is an encrypted file manager that runs
-                entirely within your browser. Files are encrypted on your device
-                and stored using the browser&apos;s{" "}
+                entirely within your browser. Files are encrypted on your
+                device and stored using the browser&apos;s{" "}
                 <a
                   className="text-violet-600 dark:text-violet-400"
                   href="https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system"
@@ -41,9 +49,28 @@ export default function Home() {
                 >
                   Origin Private File System
                 </a>
-                . Encryption is performed using symmetric encryption (AES-GCM
-                mode), and the process is executed via the browser&apos;s
-                native Web Crypto API.
+                . Encryption is performed using symmetric encryption
+                (AES-256-GCM), with the key derived from your password via
+                PBKDF2, and the process runs entirely through the
+                browser&apos;s native Web Crypto API. File and folder names
+                are encrypted too — a listed entry only shows its real name
+                once it decrypts under the password currently typed above, so
+                it&apos;s fine to use a different password for different
+                files.
+              </p>
+              <p className="mb-1">
+                Entries you can&apos;t currently open show up as{" "}
+                <span className="font-semibold">🔒 locked</span> rather than
+                an error — try the password that was used to encrypt them.
+                Files from an earlier version of this app used a weaker key
+                derivation and are not shown here at all; open those on the{" "}
+                <Link
+                  className="text-violet-600 dark:text-violet-400"
+                  href="/legacy"
+                >
+                  Legacy Files
+                </Link>{" "}
+                page instead.
               </p>
               <p>
                 The source code is available on{" "}

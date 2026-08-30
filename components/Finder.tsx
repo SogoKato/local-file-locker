@@ -1,23 +1,27 @@
 "use client";
 
 import { getMimeType } from "@/lib/mime";
-import {
-  deleteFile,
-  deleteDir,
-  listEntries,
-  refreshEntries,
-  Entry,
-} from "@/lib/opfs";
 import { getPreviewKind } from "@/lib/preview";
-import { decrypt } from "@/lib/crypto";
+import {
+  deleteEntry as vaultDeleteEntry,
+  exportEntry,
+  listEntries,
+  openFileContent,
+  refreshEntries,
+  VaultEntry,
+  VaultFileEntry,
+} from "@/lib/vault";
 import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FinderProps = {
   className?: string;
-  entries: Entry[];
-  setEntries: (v: Entry[]) => void;
+  entries: VaultEntry[];
+  setEntries: (v: VaultEntry[]) => void;
   password: string;
 };
+
+const pathKey = (entry: VaultEntry): string => entry.opaquePath.join("/");
+const displayName = (entry: VaultEntry): string => entry.name ?? `🔒 ${entry.opaqueId.slice(0, 8)}`;
 
 const Finder: React.FC<FinderProps> = ({
   className,
@@ -44,28 +48,63 @@ const Finder: React.FC<FinderProps> = ({
 
   useEffect(() => () => revokePreviewObjectUrl(), [revokePreviewObjectUrl]);
 
-  const downloadEntry = async (entry: Entry) => {
-    if (entry.kind === "directory") return;
+  const downloadEntry = async (entry: VaultFileEntry) => {
+    const { bytes, filename } = await exportEntry(entry);
     const url = URL.createObjectURL(
-      new Blob([entry.cipherData], { type: "application/octet-streams" })
+      new Blob([bytes], { type: "application/octet-streams" })
     );
     const a = document.createElement("a");
     document.body.appendChild(a);
-    a.download = `${entry.name}.enc`;
+    a.download = filename;
     a.href = url;
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
   };
 
-  const openEntry = useCallback(async (entry: Entry) => {
+  const showUnsupportedPreview = (entry: VaultFileEntry, message: string, mimeType?: string) => {
+    setPreview(
+      <div className="bg-slate-950 max-w-md p-8 rounded text-slate-50 z-10">
+        <div className="font-semibold">{displayName(entry)}</div>
+        <div className="text-slate-400 text-sm mt-1">
+          {entry.size.toLocaleString()} bytes
+        </div>
+        {mimeType ? (
+          <div className="text-slate-400 text-sm">
+            {mimeType === "application/octet-stream" ? "unknown" : mimeType}
+          </div>
+        ) : null}
+        <p className="mt-4">{message}</p>
+        <button
+          className="bg-slate-700 hover:bg-violet-700 duration-300 font-semibold mt-4 px-4 py-2 rounded-full text-sm transition-all"
+          onClick={() => downloadEntry(entry)}
+        >
+          download
+        </button>
+      </div>
+    );
+    setPreviewPath(pathKey(entry));
+    setVisible(true);
+  };
+
+  const openEntry = useCallback(async (entry: VaultEntry) => {
     if (entry.kind === "file") {
+      if (entry.name === null) return; // locked: current password doesn't unlock this entry
+
+      if (entry.contentFormat !== "v2-framed") {
+        showUnsupportedPreview(
+          entry,
+          "This file was imported without in-app encryption and cannot be previewed here."
+        );
+        return;
+      }
+
       if (entry.plainData === null) {
         try {
-          entry.plainData = await decrypt(password, entry.cipherData);
+          entry.plainData = await openFileContent(entry, password);
         } catch (e) {
           console.error(e);
-          alert("failed to decrypt!");
+          alert("failed to decrypt! (wrong password?)");
           return;
         }
         setEntries([...entries]);
@@ -85,11 +124,11 @@ const Finder: React.FC<FinderProps> = ({
               setPreview(
                 <img
                   className="max-h-dvh max-w-dvw z-10"
-                  alt={entry.name}
+                  alt={displayName(entry)}
                   src={event.target.result}
                 />
               );
-              setPreviewPath(entry.path);
+              setPreviewPath(pathKey(entry));
               setVisible(true);
             }
           };
@@ -105,7 +144,7 @@ const Finder: React.FC<FinderProps> = ({
                   {event.target.result}
                 </pre>
               );
-              setPreviewPath(entry.path);
+              setPreviewPath(pathKey(entry));
               setVisible(true);
             }
           };
@@ -116,7 +155,7 @@ const Finder: React.FC<FinderProps> = ({
           const url = URL.createObjectURL(blob);
           previewObjectUrlRef.current = url;
           setPreview(<audio className="z-10" controls src={url} />);
-          setPreviewPath(entry.path);
+          setPreviewPath(pathKey(entry));
           setVisible(true);
           break;
         }
@@ -130,7 +169,7 @@ const Finder: React.FC<FinderProps> = ({
               src={url}
             />
           );
-          setPreviewPath(entry.path);
+          setPreviewPath(pathKey(entry));
           setVisible(true);
           break;
         }
@@ -140,35 +179,16 @@ const Finder: React.FC<FinderProps> = ({
           setPreview(
             <iframe
               className="bg-white h-[90dvh] w-[90dvw] z-10"
-              title={entry.name}
+              title={displayName(entry)}
               src={url}
             />
           );
-          setPreviewPath(entry.path);
+          setPreviewPath(pathKey(entry));
           setVisible(true);
           break;
         }
         case "unsupported": {
-          setPreview(
-            <div className="bg-slate-950 max-w-md p-8 rounded text-slate-50 z-10">
-              <div className="font-semibold">{entry.name}</div>
-              <div className="text-slate-400 text-sm mt-1">
-                {entry.size.toLocaleString()} bytes
-              </div>
-              <div className="text-slate-400 text-sm">
-                {mimeType === "application/octet-stream" ? "unknown" : mimeType}
-              </div>
-              <p className="mt-4">No preview available for this file type.</p>
-              <button
-                className="bg-slate-700 hover:bg-violet-700 duration-300 font-semibold mt-4 px-4 py-2 rounded-full text-sm transition-all"
-                onClick={() => downloadEntry(entry)}
-              >
-                download
-              </button>
-            </div>
-          );
-          setPreviewPath(entry.path);
-          setVisible(true);
+          showUnsupportedPreview(entry, "No preview available for this file type.", mimeType);
           break;
         }
       }
@@ -176,14 +196,15 @@ const Finder: React.FC<FinderProps> = ({
       if (entry.children !== undefined) {
         entry.children = undefined;
       } else {
-        entry.children = await listEntries(entry.path);
+        entry.children = await listEntries(entry.opaquePath, password);
       }
       setEntries([...entries]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries, password, setEntries, revokePreviewObjectUrl]);
 
   const previewFiles = useMemo(() => {
-    const flattenFiles = (targetEntries: Entry[]): Entry[] =>
+    const flattenFiles = (targetEntries: VaultEntry[]): VaultFileEntry[] =>
       targetEntries.flatMap((targetEntry) => {
         if (targetEntry.kind === "file") return [targetEntry];
         if (targetEntry.children) return flattenFiles(targetEntry.children);
@@ -193,7 +214,7 @@ const Finder: React.FC<FinderProps> = ({
   }, [entries]);
 
   const previewIndex = useMemo(
-    () => previewFiles.findIndex((entry) => entry.path === previewPath),
+    () => previewFiles.findIndex((entry) => pathKey(entry) === previewPath),
     [previewFiles, previewPath]
   );
 
@@ -227,19 +248,16 @@ const Finder: React.FC<FinderProps> = ({
     };
   }, [visible, movePreview, closePreview]);
 
-  const deleteEntry = async (entry: Entry) => {
-    if (!confirm(`Are you sure want to delete "${entry.path}"?`)) return;
-    if (entry.kind === "file") {
-      await deleteFile(entry.path);
-    } else if (entry.kind === "directory") {
-      await deleteDir(entry.path);
-    }
-    refreshEntries("", entries).then((rootEntries) => setEntries(rootEntries));
+  const deleteEntry = async (entry: VaultEntry) => {
+    if (!confirm(`Are you sure want to delete "${displayName(entry)}"?`)) return;
+    await vaultDeleteEntry(entry);
+    refreshEntries([], password, entries).then((rootEntries) => setEntries(rootEntries));
   };
 
-  const makeEntryList = (accumulator: JSX.Element[], entry: Entry) => {
+  const makeEntryList = (accumulator: JSX.Element[], entry: VaultEntry) => {
     const liClassName =
       "border-b last:border-0 border-slate-400 dark:border-slate-500 flex flex-wrap sm:flex-nowrap gap-1 items-center justify-between mb-1 last:mb-0 pl-2 py-2";
+    const locked = entry.kind === "file" && entry.name === null;
 
     const action =
       entry.kind === "file" ? (
@@ -270,14 +288,17 @@ const Finder: React.FC<FinderProps> = ({
       );
 
     accumulator.push(
-      <li className={liClassName} key={entry.path}>
+      <li className={liClassName} key={pathKey(entry)}>
         <div
-          className="cursor-pointer flex grow justify-between"
+          className={
+            "flex grow justify-between" +
+            (locked ? " cursor-not-allowed opacity-60" : " cursor-pointer")
+          }
           onClick={() => openEntry(entry)}
         >
           <div className="font-semibold">
             {entry.kind === "directory" ? "📁 " : ""}
-            {entry.name}
+            {displayName(entry)}
           </div>
         </div>
         {action}
@@ -290,7 +311,7 @@ const Finder: React.FC<FinderProps> = ({
       entry.children.length > 0
     ) {
       accumulator.push(
-        <li className={liClassName} key={`${entry.path}--sub`}>
+        <li className={liClassName} key={`${pathKey(entry)}--sub`}>
           <ul className="grow">{entry.children.reduce(makeEntryList, [])}</ul>
         </li>
       );
