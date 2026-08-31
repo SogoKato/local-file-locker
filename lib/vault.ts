@@ -424,17 +424,32 @@ export const exportEntry = async (
 // for "download this folder as a zip".
 export type DownloadItem = { relativePath: string; bytes: Uint8Array };
 
+// Disambiguates a filename against siblings already placed in the same zip
+// directory (e.g. two files that both decrypt to "invoice.pdf") by inserting
+// "(1)", "(2)", ... before the extension, so neither silently overwrites the
+// other when the archive is extracted.
+const dedupeFilename = (filename: string, index: number): string => {
+  if (index === 0) return filename;
+  const dotIndex = filename.lastIndexOf(".");
+  return dotIndex > 0
+    ? `${filename.slice(0, dotIndex)} (${index})${filename.slice(dotIndex)}`
+    : `${filename} (${index})`;
+};
+
 export const collectFolderForDownload = async (
   opaquePath: string[],
   password: string
 ): Promise<DownloadItem[]> => {
   const entries = await listEntries(opaquePath, password);
   const items: DownloadItem[] = [];
+  const nameCounts = new Map<string, number>();
 
   for (const entry of entries) {
     if (entry.kind === "file") {
       const { bytes, filename } = await exportEntry(entry);
-      items.push({ relativePath: filename, bytes });
+      const index = nameCounts.get(filename) ?? 0;
+      nameCounts.set(filename, index + 1);
+      items.push({ relativePath: dedupeFilename(filename, index), bytes });
     } else {
       const dirName = entry.name ?? entry.opaqueId;
       const children = await collectFolderForDownload(entry.opaquePath, password);
