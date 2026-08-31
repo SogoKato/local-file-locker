@@ -74,13 +74,18 @@ const LegacyFinder: React.FC<LegacyFinderProps> = ({
       if (entry.kind === "file") {
         try {
           const plain = await decryptLegacy(password, entry.cipherData);
-          items.push({ relativePath: entry.path, bytes: plain });
+          items.push({ relativePath: entry.name, bytes: plain });
         } catch {
           skipped.push(entry.path);
         }
       } else {
         const nested = await collectLegacyForDownload(entry.path);
-        items.push(...nested.items);
+        items.push(
+          ...nested.items.map((item) => ({
+            relativePath: `${entry.name}/${item.relativePath}`,
+            bytes: item.bytes,
+          }))
+        );
         skipped.push(...nested.skipped);
       }
     }
