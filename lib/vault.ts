@@ -458,10 +458,7 @@ export const exportEntry = async (
 };
 
 // Recursively gathers every file under opaquePath as raw, still-encrypted
-// blobs (same as exportEntry, just for a whole subtree at once) - no
-// password-gated decryption happens here, so locked entries are included
-// too, just under an opaqueId-based name instead of their real one. Used
-// for "download this folder as a zip".
+// blobs, for "download this folder as a zip".
 //
 // The blobs stay unread (see exportEntry): the whole subtree's worth of
 // handles is cheap, and client-zip pulls each one's bytes off disk only as
@@ -480,26 +477,93 @@ const dedupeFilename = (filename: string, index: number): string => {
     : `${filename} (${index})`;
 };
 
+// A v2-framed file goes into the archive under its opaque id rather than its
+// real name. The name is not lost by doing so: it rides along encrypted
+// inside the exported container, and importExportedFile restores the entry
+// from the embedded opaque id without ever reading the archive's filename.
+// Resolving it would cost one 600k-iteration PBKDF2 per file, which measured
+// as the bulk of a large export's wall time - and crypto.subtle serializes on
+// WebKit, so a concurrency pool does not recover it.
+//
+// raw-passthrough is the exception and must keep its real name: its export
+// strips the header and name blob, so the archive's filename is the only
+// surviving copy (NewFile re-reads it on import). Which branch applies is
+// decided from the container header, which costs no derivation at all.
+const exportFileAt = async (
+  opaquePath: string[],
+  opaqueId: string,
+  password: string
+): Promise<{ blob: Blob; filename: string }> => {
+  const file = await opfsStore.readFile(opaquePath);
+  const header = await readContainerHeader(file);
+  if (header.contentFormat === "v2-framed") {
+    return { blob: file.slice(0, file.size, OCTET_STREAM), filename: `${opaqueId}.lfl` };
+  }
+  const contentStart = HEADER_LENGTH + header.nameBlobLen;
+  const nameBlobBytes = new Uint8Array(
+    await file.slice(HEADER_LENGTH, contentStart).arrayBuffer()
+  );
+  const res = await resolveName(opaqueId, nameBlobBytes, password);
+  return {
+    blob: file.slice(contentStart, file.size, OCTET_STREAM),
+    filename: `${res.ok ? res.name : opaqueId}.enc`,
+  };
+};
+
+// Directory names are still resolved: there are far fewer of them than
+// files, and it keeps the archive navigable by folder.
+const resolveDirName = async (
+  dirPath: string[],
+  opaqueId: string,
+  password: string
+): Promise<string> => {
+  try {
+    const nameFile = await opfsStore.readFile([...dirPath, DIR_NAME_FILE]);
+    const nameBlobBytes = new Uint8Array(await nameFile.arrayBuffer());
+    const res = await resolveName(opaqueId, nameBlobBytes, password);
+    if (res.ok) return res.name;
+  } catch {
+    // missing/malformed name file - fall back to the opaque id
+  }
+  return opaqueId;
+};
+
+// Walks the tree directly rather than through listEntries, which resolves
+// every entry's name eagerly. The naming policy above is why.
 export const collectFolderForDownload = async (
   opaquePath: string[],
   password: string
 ): Promise<DownloadItem[]> => {
-  const entries = await listEntries(opaquePath, password);
+  const children = await opfsStore.listChildren(opaquePath);
+  // Sorted so the archive layout - and dedupeFilename's numbering - come out
+  // the same on every run. By opaque id, since the real names are exactly
+  // what this walk sets out not to resolve.
+  const targets = children
+    .filter((child) => !(child.kind === "file" && child.id === DIR_NAME_FILE))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  // Only the header reads are concurrent here; almost nothing derives a key
+  // anymore, so this is overlapping OPFS I/O rather than crypto.
+  const exported = await mapWithConcurrency(
+    targets.filter((child) => child.kind === "file"),
+    NAME_RESOLUTION_CONCURRENCY,
+    (child) => exportFileAt([...opaquePath, child.id], child.id, password)
+  );
+
   const items: DownloadItem[] = [];
   const nameCounts = new Map<string, number>();
+  for (const { blob, filename } of exported) {
+    const index = nameCounts.get(filename) ?? 0;
+    nameCounts.set(filename, index + 1);
+    items.push({ relativePath: dedupeFilename(filename, index), input: blob });
+  }
 
-  for (const entry of entries) {
-    if (entry.kind === "file") {
-      const { blob, filename } = await exportEntry(entry);
-      const index = nameCounts.get(filename) ?? 0;
-      nameCounts.set(filename, index + 1);
-      items.push({ relativePath: dedupeFilename(filename, index), input: blob });
-    } else {
-      const dirName = entry.name ?? entry.opaqueId;
-      const children = await collectFolderForDownload(entry.opaquePath, password);
-      for (const child of children) {
-        items.push({ relativePath: `${dirName}/${child.relativePath}`, input: child.input });
-      }
+  for (const child of targets) {
+    if (child.kind !== "directory") continue;
+    const childPath = [...opaquePath, child.id];
+    const dirName = await resolveDirName(childPath, child.id, password);
+    for (const item of await collectFolderForDownload(childPath, password)) {
+      items.push({ relativePath: `${dirName}/${item.relativePath}`, input: item.input });
     }
   }
 
