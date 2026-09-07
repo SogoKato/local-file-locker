@@ -473,9 +473,6 @@ key  = SHA-256(password_utf8)        ← ソルトなし・ストレッチング
   除で実装する。opaque id は変わらないのでキャッシュもそのまま有効。
 - **個別選択 UI（チェックボックス）**: 現在の一括ダウンロードは「フォルダ単位」
   のため未着手。「選んだファイルだけ移動/DL」等が必要になった時に検討。
-- **`collectFolderForDownload` の async generator 化**: `downloadZip` は
-  `ForAwaitable` を取るので、ツリー走査自体を遅延させられる。ハンドルの配列を
-  先に作らずに済み、zip が即座に流れ始める。
 ### やらないと決めたこと
 
 - 旧 `LocalFileLocker`（平文名）→ 新 `LocalFileLockerVault`（opaque 名）への
@@ -483,6 +480,12 @@ key  = SHA-256(password_utf8)        ← ソルトなし・ストレッチング
   `/legacy` で参照/手動移行する（§9 の DL + 再アップロード）。
 - 一度きりの意図的な破壊的変更であり、継続的なフォーマット交渉やフィーチャー
   フラグの仕組みは作らない。
+- **`collectFolderForDownload` の async generator 化**はしない。`downloadZip` は
+  `ForAwaitable` を取るので走査を遅延させること自体は可能で、残った `preparing`
+  （ディレクトリ名の解決、実測で約15秒）を zip の I/O に重ねて隠せる。しかし
+  `predictLength()` は完全なアイテム列を必要とし、書き出し前の容量チェックと進捗
+  の分母がどちらもそれに依存している（§9）。走査を遅延させると両方を失うため、
+  15秒と引き換えにするには割に合わない。
 
 ---
 
