@@ -217,62 +217,95 @@ const sortEntries = (entries: VaultEntry[]): VaultEntry[] =>
 
 // --- Listing / refreshing -------------------------------------------------
 
+// Resolving a directory's children is dominated by PBKDF2, not by I/O: every
+// child whose name isn't already cached costs one 600k-iteration derivation,
+// and per-entry salts (see lib/crypto.ts) rule out sharing a key between
+// them. Issuing those in a bounded pool instead of one at a time also lets
+// the OPFS reads for later children overlap the crypto for earlier ones.
+//
+// The cap matters: a wide directory would otherwise open every child's file
+// handle at once, which is the kind of thing that costs a tab on iOS.
+const NAME_RESOLUTION_CONCURRENCY = 8;
+
+const mapWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> => {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return results;
+};
+
 export const listEntries = async (
   opaquePath: string[],
   password: string
 ): Promise<VaultEntry[]> => {
   const children = await opfsStore.listChildren(opaquePath);
-  const entries: VaultEntry[] = [];
+  // Skip this dir's own name sentinel; it isn't a child entry.
+  const targets = children.filter(
+    (child) => !(child.kind === "file" && child.id === DIR_NAME_FILE)
+  );
 
-  for (const child of children) {
-    if (child.kind === "file" && child.id === DIR_NAME_FILE) continue; // this dir's own sentinel, not a child
-    const childPath = [...opaquePath, child.id];
+  const entries = await mapWithConcurrency(
+    targets,
+    NAME_RESOLUTION_CONCURRENCY,
+    async (child): Promise<VaultEntry> => {
+      const childPath = [...opaquePath, child.id];
 
-    if (child.kind === "directory") {
-      let name: string | null = null;
-      try {
-        const nameFile = await opfsStore.readFile([...childPath, DIR_NAME_FILE]);
-        const nameBlobBytes = new Uint8Array(await nameFile.arrayBuffer());
-        const res = await resolveName(child.id, nameBlobBytes, password);
-        if (res.ok) name = res.name;
-      } catch {
-        // missing/malformed name file - degrade to locked, same as a wrong password
+      if (child.kind === "directory") {
+        let name: string | null = null;
+        try {
+          const nameFile = await opfsStore.readFile([...childPath, DIR_NAME_FILE]);
+          const nameBlobBytes = new Uint8Array(await nameFile.arrayBuffer());
+          const res = await resolveName(child.id, nameBlobBytes, password);
+          if (res.ok) name = res.name;
+        } catch {
+          // missing/malformed name file - degrade to locked, same as a wrong password
+        }
+        return { kind: "directory", opaqueId: child.id, opaquePath: childPath, name };
       }
-      entries.push({ kind: "directory", opaqueId: child.id, opaquePath: childPath, name });
-      continue;
-    }
 
-    try {
-      const file = await opfsStore.readFile(childPath);
-      const { header, nameBlobBytes } = await readContainerHeaderAndName(file);
-      const res = await resolveName(child.id, nameBlobBytes, password);
-      const contentLength = file.size - HEADER_LENGTH - header.nameBlobLen;
-      const size =
-        header.contentFormat === "v2-framed"
-          ? Math.max(0, contentLength - V2_BLOB_OVERHEAD)
-          : contentLength;
-      entries.push({
-        kind: "file",
-        opaqueId: child.id,
-        opaquePath: childPath,
-        name: res.ok ? res.name : null,
-        size,
-        contentFormat: header.contentFormat,
-        plainData: null,
-      });
-    } catch (e) {
-      console.error("listEntries: failed to read file entry", childPath.join("/"), e);
-      entries.push({
-        kind: "file",
-        opaqueId: child.id,
-        opaquePath: childPath,
-        name: null,
-        size: 0,
-        contentFormat: "raw-passthrough",
-        plainData: null,
-      });
+      try {
+        const file = await opfsStore.readFile(childPath);
+        const { header, nameBlobBytes } = await readContainerHeaderAndName(file);
+        const res = await resolveName(child.id, nameBlobBytes, password);
+        const contentLength = file.size - HEADER_LENGTH - header.nameBlobLen;
+        const size =
+          header.contentFormat === "v2-framed"
+            ? Math.max(0, contentLength - V2_BLOB_OVERHEAD)
+            : contentLength;
+        return {
+          kind: "file",
+          opaqueId: child.id,
+          opaquePath: childPath,
+          name: res.ok ? res.name : null,
+          size,
+          contentFormat: header.contentFormat,
+          plainData: null,
+        };
+      } catch (e) {
+        console.error("listEntries: failed to read file entry", childPath.join("/"), e);
+        return {
+          kind: "file",
+          opaqueId: child.id,
+          opaquePath: childPath,
+          name: null,
+          size: 0,
+          contentFormat: "raw-passthrough",
+          plainData: null,
+        };
+      }
     }
-  }
+  );
 
   return sortEntries(entries);
 };
