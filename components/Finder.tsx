@@ -13,7 +13,7 @@ import {
   VaultFileEntry,
 } from "@/lib/vault";
 import * as exportScratch from "@/lib/exportScratch";
-import { makeZip } from "client-zip";
+import { makeZip, predictLength } from "client-zip";
 import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FinderProps = {
@@ -40,6 +40,31 @@ const startDownload = (blob: Blob, filename: string) => {
   setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_TTL_MS);
 };
 
+// Which folder is being zipped, so only the button that started it reports
+// progress. total === 0 means collectFolderForDownload is still walking the
+// tree: every entry it meets needs its name decrypted, and each one not
+// already cached costs a 600k-iteration PBKDF2 (salts are per-entry, so no
+// key can be reused). Nothing streams until that finishes, so the two phases
+// are worth telling apart on screen.
+type ZipProgress = { pathKey: string; written: number; total: number };
+
+const zipLabel = (progress: ZipProgress | null, key: string, idle: string): string => {
+  if (progress === null || progress.pathKey !== key) return idle;
+  if (progress.total === 0) return "preparing...";
+  return `zipping ${Math.floor((progress.written / progress.total) * 100)}%`;
+};
+
+const formatBytes = (bytes: number): string => {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 || value >= 10 ? 0 : 1)} ${units[unit]}`;
+};
+
 const pathKey = (entry: VaultEntry): string => entry.opaquePath.join("/");
 const displayName = (entry: VaultEntry): string => entry.name ?? `🔒 ${entry.opaqueId.slice(0, 8)}`;
 
@@ -52,7 +77,8 @@ const Finder: React.FC<FinderProps> = ({
   const [visible, setVisible] = useState<boolean>(false);
   const [preview, setPreview] = useState<JSX.Element>();
   const [previewPath, setPreviewPath] = useState<string | null>(null);
-  const [isZipping, setIsZipping] = useState<boolean>(false);
+  const [zipProgress, setZipProgress] = useState<ZipProgress | null>(null);
+  const isZipping = zipProgress !== null;
   const previewObjectUrlRef = useRef<string | null>(null);
 
   const revokePreviewObjectUrl = useCallback(() => {
@@ -87,22 +113,53 @@ const Finder: React.FC<FinderProps> = ({
   // collected into a Blob: streaming it through OPFS is what keeps peak
   // memory independent of how big the folder is.
   const downloadFolderAsZip = async (opaquePath: string[], zipBaseName: string) => {
-    setIsZipping(true);
+    const key = opaquePath.join("/");
+    setZipProgress({ pathKey: key, written: 0, total: 0 });
     try {
       const items = await collectFolderForDownload(opaquePath, password);
       if (items.length === 0) {
         alert("This folder has no files to download.");
         return;
       }
+
+      // Every entry's Blob.size is exactly what it contributes to the
+      // archive, so this is the real byte count rather than an estimate.
+      const total = Number(
+        predictLength(
+          items.map((item) => ({ name: item.relativePath, size: item.input.size }))
+        )
+      );
+
+      // Staging the archive on disk means the vault's bytes exist twice
+      // until the download finishes. estimate() reports headroom against
+      // the origin's quota, which on Safari can be much larger than the
+      // device's actual free space - this catches the common case, not
+      // every case.
+      const { quota, usage } = await navigator.storage.estimate();
+      if (quota !== undefined && usage !== undefined && quota - usage < total) {
+        alert(
+          "Not enough room to build this archive.\n\n" +
+            `needs: ${formatBytes(total)}\navailable: ${formatBytes(quota - usage)}`
+        );
+        return;
+      }
+
+      let lastPct = -1;
       const archive = await exportScratch.writeZip(
-        makeZip(items.map((item) => ({ name: item.relativePath, input: item.input })))
+        makeZip(items.map((item) => ({ name: item.relativePath, input: item.input }))),
+        (written) => {
+          const pct = Math.floor((written / total) * 100);
+          if (pct === lastPct) return; // at most one render per percent
+          lastPct = pct;
+          setZipProgress({ pathKey: key, written, total });
+        }
       );
       startDownload(archive, `${zipBaseName}.zip`);
     } catch (e) {
       console.error(e);
       alert("failed to build the zip download!");
     } finally {
-      setIsZipping(false);
+      setZipProgress(null);
     }
   };
 
@@ -327,7 +384,7 @@ const Finder: React.FC<FinderProps> = ({
             disabled={isZipping}
             onClick={() => downloadFolderAsZip(entry.opaquePath, entry.name ?? entry.opaqueId)}
           >
-            download folder
+            {zipLabel(zipProgress, pathKey(entry), "download folder")}
           </button>
           <button
             className="bg-slate-300 dark:bg-slate-600 hover:bg-red-300 hover:dark:bg-red-600 duration-300 font-semibold ml-2 px-4 py-2 rounded-full hover:text-red-700 hover:dark:text-red-100 text-sm transition-all"
@@ -382,7 +439,7 @@ const Finder: React.FC<FinderProps> = ({
             disabled={isZipping}
             onClick={() => downloadFolderAsZip([], "vault")}
           >
-            {isZipping ? "zipping..." : "download all (.zip)"}
+            {zipLabel(zipProgress, "", "download all (.zip)")}
           </button>
         </div>
       ) : null}

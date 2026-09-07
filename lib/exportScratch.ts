@@ -12,6 +12,19 @@
 
 const SCRATCH_ROOT = "LocalFileLockerExports";
 
+const countBytes = (
+  onProgress: (written: number) => void
+): TransformStream<Uint8Array, Uint8Array> => {
+  let written = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      written += chunk.byteLength;
+      onProgress(written);
+      controller.enqueue(chunk);
+    },
+  });
+};
+
 const getScratchRoot = async (): Promise<FileSystemDirectoryHandle> => {
   const opfsRoot = await navigator.storage.getDirectory();
   return opfsRoot.getDirectoryHandle(SCRATCH_ROOT, { create: true });
@@ -38,12 +51,22 @@ export const sweep = async (keep?: string): Promise<void> => {
 
 // Drains `zipStream` into a fresh file and returns it. The returned File is a
 // lazy handle onto that file - nothing here reads the archive back.
-export const writeZip = async (zipStream: ReadableStream<Uint8Array>): Promise<File> => {
+//
+// `onProgress` is called with the running byte total as chunks pass through,
+// once per chunk - client-zip emits a lot of them, so a caller that renders
+// the value must throttle it.
+export const writeZip = async (
+  zipStream: ReadableStream<Uint8Array>,
+  onProgress?: (written: number) => void
+): Promise<File> => {
   const root = await getScratchRoot();
   const name = `${crypto.randomUUID()}.zip`;
   const handle = await root.getFileHandle(name, { create: true });
+  const counted = onProgress
+    ? zipStream.pipeThrough(countBytes(onProgress))
+    : zipStream;
   try {
-    await zipStream.pipeTo(await handle.createWritable());
+    await counted.pipeTo(await handle.createWritable());
   } catch (e) {
     await root.removeEntry(name).catch(() => {}); // don't leave a partial archive behind
     throw e;
