@@ -82,10 +82,15 @@ lib/opfs.ts (旧・無変更) ── /legacy 専用。実名をそのまま OPFS
 
 - 新ボールト: `LocalFileLockerVault`（`lib/opfsStore.ts`）
 - 旧データ: `LocalFileLocker`（`lib/opfs.ts`、`/legacy` が参照）
+- 書き出し一時領域: `LocalFileLockerExports`（`lib/exportScratch.ts`、§9）
 
 兄弟ディレクトリとして完全分離しており、新旧が同じ一覧に混在することは構造
 上ありえない。このためメインページ側に「これは旧形式ファイルだ」という判別・
 誘導ロジックは不要。
+
+一時領域をボールト配下に置いてはならない。`listEntries` がコンテナとして解釈
+できず壊れたエントリとして列挙し、さらに次回の一括ダウンロードに自分自身が巻
+き込まれる。
 
 ---
 
@@ -322,9 +327,27 @@ Blob**であり、`File.slice()` はバイトを読まない。**これをバイ
 い）に容易に到達する。client-zip は各エントリに到達した時点で初めてディスクを
 読むので、この契約を守る限り入力側のピークは同時1ファイル分に収まる。
 
-出力側は現状 `.blob()` で zip 全体をメモリに畳んでおり、ピークは zip サイズ
-（暗号化済み＝無圧縮なので ≒ フォルダサイズ）のまま残っている。ここを
-`makeZip()` の stream 化に置き換えるのが次段（§12）。
+出力側も同様にメモリを経由しない。`makeZip()` が返す stream を
+`LocalFileLockerExports` 配下の一時ファイルへ `pipeTo` し、書き終えたハンドル
+から取り直した**ディスク裏付けの `File`** を `createObjectURL` に渡す
+（`lib/exportScratch.ts`）。`Response.blob()` で畳むとアーカイブ全体（暗号化済
+み＝無圧縮なので ≒ フォルダサイズ）がヒープに載るため、この経路は使わない。
+結果としてピークはフォルダサイズに依存しなくなる。
+
+対価はディスクで、書き出し中だけ「元データ＋一時 zip＋ダウンロード先」で計3倍
+を使う。一時ファイルを消せば定常2倍に戻る（2倍のほうは、同じ端末に別ファイル
+として書き出す以上避けられない）。Safari 17 以降の quota は1オリジンあたりディ
+スクの最大60%あるので、制約になるのは quota ではなく実際の空き容量。
+
+`showSaveFilePicker` は Safari 非対応、Service Worker 方式（StreamSaver 相当）
+は iOS での信頼性に難があるため、いずれも採っていない。
+
+**一時ファイルの後始末**: ダウンロード開始直後に消すと転送が壊れるため、消せる
+のは「次に何か起きた時」だけになる。`sweep()` を起動時（前セッションの残骸を
+掃除）と新しいアーカイブを書いた直後（直前の1個を掃除）に呼び、常に最新の1個だ
+けを残す。裏返すと、転送中にページをリロードするとそのダウンロードは失われる。
+同じ理由で blob URL も `click()` 直後には revoke できない（`Finder.tsx` の
+`DOWNLOAD_URL_TTL_MS`）。
 
 ---
 
@@ -393,13 +416,6 @@ key  = SHA-256(password_utf8)        ← ソルトなし・ストレッチング
   除で実装する。opaque id は変わらないのでキャッシュもそのまま有効。
 - **個別選択 UI（チェックボックス）**: 現在の一括ダウンロードは「フォルダ単位」
   のため未着手。「選んだファイルだけ移動/DL」等が必要になった時に検討。
-- **zip 出力の stream 化**: `.blob()` をやめ、`makeZip()` を OPFS 上の一時ファ
-  イルへ `pipeTo` し、そこから得たディスク裏付け `File` を `createObjectURL` で
-  配る。ピークがフォルダサイズに依存しなくなる。`showSaveFilePicker` は Safari
-  非対応、Service Worker 方式は iOS での信頼性に難があるため採らない。対価は書
-  き出し中だけディスクを1倍余分に使うこと（元データ＋一時 zip＋DL 先で計3倍。
-  完了後の一時ファイル掃除で定常2倍に戻る）。一時ファイルはダウンロード開始直
-  後に消すと転送が壊れるので、固定の場所に置いて次回起動時に掃除する。
 - **`collectFolderForDownload` の async generator 化**: `downloadZip` は
   `ForAwaitable` を取るので、ツリー走査自体を遅延させられる。ハンドルの配列を
   先に作らずに済み、zip が即座に流れ始める。
@@ -427,6 +443,7 @@ key  = SHA-256(password_utf8)        ← ソルトなし・ストレッチング
 | `lib/opfsStore.ts` | 新ボールト用 OPFS 薄ラッパー（opaque セグメント） |
 | `lib/vault.ts` | opaque 化・AAD・コンテナ・名前解決キャッシュ・dir 解決・import/export・一括DL |
 | `lib/opfs.ts` | 旧 OPFS 実装（無変更）。`/legacy` 専用 |
+| `lib/exportScratch.ts` | 書き出し用 OPFS 一時領域（zip の stream 書き込みと掃除） |
 | `components/Finder.tsx` | メインボールトの一覧/プレビュー/DL |
 | `components/buttons/NewFile.tsx` | アップロード（3分岐）+ dir 解決 |
 | `components/LegacyFinder.tsx` | `/legacy` の読み取り専用一覧 + 復号一括DL |

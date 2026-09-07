@@ -12,7 +12,8 @@ import {
   VaultEntry,
   VaultFileEntry,
 } from "@/lib/vault";
-import { downloadZip } from "client-zip";
+import * as exportScratch from "@/lib/exportScratch";
+import { makeZip } from "client-zip";
 import { JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FinderProps = {
@@ -20,6 +21,23 @@ type FinderProps = {
   entries: VaultEntry[];
   setEntries: (v: VaultEntry[]) => void;
   password: string;
+};
+
+// Revoking a blob URL right after click() can abort the transfer it just
+// started, which is exactly the large-file case this export path exists for.
+// Object URLs die with the document anyway, so the delay only bounds how long
+// a stale one keeps its file alive.
+const DOWNLOAD_URL_TTL_MS = 60_000;
+
+const startDownload = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  document.body.appendChild(a);
+  a.download = filename;
+  a.href = url;
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_TTL_MS);
 };
 
 const pathKey = (entry: VaultEntry): string => entry.opaquePath.join("/");
@@ -51,21 +69,23 @@ const Finder: React.FC<FinderProps> = ({
 
   useEffect(() => () => revokePreviewObjectUrl(), [revokePreviewObjectUrl]);
 
+  // Discard archives the last session left behind (see lib/exportScratch).
+  useEffect(() => {
+    void exportScratch.sweep();
+  }, []);
+
   const downloadEntry = async (entry: VaultFileEntry) => {
     const { blob, filename } = await exportEntry(entry);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    document.body.appendChild(a);
-    a.download = filename;
-    a.href = url;
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    startDownload(blob, filename);
   };
 
   // Zips a folder's contents exactly as stored on disk (still encrypted) -
   // no password needed, so locked entries are included too, just named
   // after their opaque id instead of their real name.
+  //
+  // The archive goes to disk and comes back as a File rather than being
+  // collected into a Blob: streaming it through OPFS is what keeps peak
+  // memory independent of how big the folder is.
   const downloadFolderAsZip = async (opaquePath: string[], zipBaseName: string) => {
     setIsZipping(true);
     try {
@@ -74,17 +94,10 @@ const Finder: React.FC<FinderProps> = ({
         alert("This folder has no files to download.");
         return;
       }
-      const blob = await downloadZip(
-        items.map((item) => ({ name: item.relativePath, input: item.input }))
-      ).blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      document.body.appendChild(a);
-      a.download = `${zipBaseName}.zip`;
-      a.href = url;
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      const archive = await exportScratch.writeZip(
+        makeZip(items.map((item) => ({ name: item.relativePath, input: item.input })))
+      );
+      startDownload(archive, `${zipBaseName}.zip`);
     } catch (e) {
       console.error(e);
       alert("failed to build the zip download!");
