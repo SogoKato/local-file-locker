@@ -52,10 +52,8 @@ const Finder: React.FC<FinderProps> = ({
   useEffect(() => () => revokePreviewObjectUrl(), [revokePreviewObjectUrl]);
 
   const downloadEntry = async (entry: VaultFileEntry) => {
-    const { bytes, filename } = await exportEntry(entry);
-    const url = URL.createObjectURL(
-      new Blob([bytes], { type: "application/octet-streams" })
-    );
+    const { blob, filename } = await exportEntry(entry);
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     document.body.appendChild(a);
     a.download = filename;
@@ -77,7 +75,7 @@ const Finder: React.FC<FinderProps> = ({
         return;
       }
       const blob = await downloadZip(
-        items.map((item) => ({ name: item.relativePath, input: item.bytes }))
+        items.map((item) => ({ name: item.relativePath, input: item.input }))
       ).blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

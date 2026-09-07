@@ -313,6 +313,19 @@ verbatim コピー。contentFormat で拡張子を分ける:
 れる等）は、展開時に上書きし合わないよう `dedupeFilename` で `(1)` `(2)`… を
 拡張子前に挿入する（コミット `bdce786`）。
 
+### メモリ制約
+
+`exportEntry` と `collectFolderForDownload` が返すのは OPFS ファイルへの**遅延
+Blob**であり、`File.slice()` はバイトを読まない。**これをバイト列へ読み出して
+はならない**。サブツリー全体を先にメモリへ載せると iOS Safari のタブ上限（概ね
+300〜450MB。超過時は Jetsam がタブを無警告で落とすため `onerror` すら上がらな
+い）に容易に到達する。client-zip は各エントリに到達した時点で初めてディスクを
+読むので、この契約を守る限り入力側のピークは同時1ファイル分に収まる。
+
+出力側は現状 `.blob()` で zip 全体をメモリに畳んでおり、ピークは zip サイズ
+（暗号化済み＝無圧縮なので ≒ フォルダサイズ）のまま残っている。ここを
+`makeZip()` の stream 化に置き換えるのが次段（§12）。
+
 ---
 
 ## 10. Legacy（v1）— 読み取り専用
@@ -380,6 +393,21 @@ key  = SHA-256(password_utf8)        ← ソルトなし・ストレッチング
   除で実装する。opaque id は変わらないのでキャッシュもそのまま有効。
 - **個別選択 UI（チェックボックス）**: 現在の一括ダウンロードは「フォルダ単位」
   のため未着手。「選んだファイルだけ移動/DL」等が必要になった時に検討。
+- **zip 出力の stream 化**: `.blob()` をやめ、`makeZip()` を OPFS 上の一時ファ
+  イルへ `pipeTo` し、そこから得たディスク裏付け `File` を `createObjectURL` で
+  配る。ピークがフォルダサイズに依存しなくなる。`showSaveFilePicker` は Safari
+  非対応、Service Worker 方式は iOS での信頼性に難があるため採らない。対価は書
+  き出し中だけディスクを1倍余分に使うこと（元データ＋一時 zip＋DL 先で計3倍。
+  完了後の一時ファイル掃除で定常2倍に戻る）。一時ファイルはダウンロード開始直
+  後に消すと転送が壊れるので、固定の場所に置いて次回起動時に掃除する。
+- **`collectFolderForDownload` の async generator 化**: `downloadZip` は
+  `ForAwaitable` を取るので、ツリー走査自体を遅延させられる。ハンドルの配列を
+  先に作らずに済み、zip が即座に流れ始める。
+- **書き出し前の容量見積もり**: `predictLength()`（中身不要、名前とサイズだけ
+  で正確なバイト数を返す）と `navigator.storage.estimate()` を突き合わせ、開始
+  前に不足を知らせる。渡すサイズは `VaultFileEntry.size`（復号後の論理サイズ）
+  ではなく zip に入る実バイト数（v2-framed なら `file.size`、raw-passthrough な
+  ら `file.size - HEADER_LENGTH - nameBlobLen`）である点に注意。
 
 ### やらないと決めたこと
 

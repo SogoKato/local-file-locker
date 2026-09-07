@@ -122,11 +122,13 @@ const decodeHeader = (headerBytes: Uint8Array): DecodedHeader => {
   return { opaqueId, contentFormat, nameBlobLen };
 };
 
+const readContainerHeader = async (file: File): Promise<DecodedHeader> =>
+  decodeHeader(new Uint8Array(await file.slice(0, HEADER_LENGTH).arrayBuffer()));
+
 const readContainerHeaderAndName = async (
   file: File
 ): Promise<{ header: DecodedHeader; nameBlobBytes: Uint8Array }> => {
-  const headerBytes = new Uint8Array(await file.slice(0, HEADER_LENGTH).arrayBuffer());
-  const header = decodeHeader(headerBytes);
+  const header = await readContainerHeader(file);
   const nameBlobBytes = new Uint8Array(
     await file.slice(HEADER_LENGTH, HEADER_LENGTH + header.nameBlobLen).arrayBuffer()
   );
@@ -401,28 +403,37 @@ export const importExportedFile = async (
   };
 };
 
+const OCTET_STREAM = "application/octet-stream";
+
+// The returned Blob is a lazy view onto the OPFS file - slicing never reads
+// the bytes - so callers must keep it as a Blob (hand it to client-zip or
+// createObjectURL) rather than buffering it, or a whole file lands on the
+// heap and large exports blow the tab's memory budget.
 export const exportEntry = async (
   entry: VaultFileEntry
-): Promise<{ bytes: Uint8Array; filename: string }> => {
+): Promise<{ blob: Blob; filename: string }> => {
   const file = await opfsStore.readFile(entry.opaquePath);
-  const allBytes = new Uint8Array(await file.arrayBuffer());
+  const name = entry.name ?? entry.opaqueId;
   if (entry.contentFormat === "v2-framed") {
-    return { bytes: allBytes, filename: `${entry.name ?? entry.opaqueId}.lfl` };
+    return { blob: file.slice(0, file.size, OCTET_STREAM), filename: `${name}.lfl` };
   }
-  const header = decodeHeader(allBytes.slice(0, HEADER_LENGTH));
-  const contentStart = HEADER_LENGTH + header.nameBlobLen;
+  const header = await readContainerHeader(file);
   return {
-    bytes: allBytes.subarray(contentStart),
-    filename: `${entry.name ?? entry.opaqueId}.enc`,
+    blob: file.slice(HEADER_LENGTH + header.nameBlobLen, file.size, OCTET_STREAM),
+    filename: `${name}.enc`,
   };
 };
 
 // Recursively gathers every file under opaquePath as raw, still-encrypted
-// bytes (same as exportEntry, just for a whole subtree at once) - no
+// blobs (same as exportEntry, just for a whole subtree at once) - no
 // password-gated decryption happens here, so locked entries are included
 // too, just under an opaqueId-based name instead of their real one. Used
 // for "download this folder as a zip".
-export type DownloadItem = { relativePath: string; bytes: Uint8Array };
+//
+// The blobs stay unread (see exportEntry): the whole subtree's worth of
+// handles is cheap, and client-zip pulls each one's bytes off disk only as
+// it reaches that entry in the archive.
+export type DownloadItem = { relativePath: string; input: Blob };
 
 // Disambiguates a filename against siblings already placed in the same zip
 // directory (e.g. two files that both decrypt to "invoice.pdf") by inserting
@@ -446,15 +457,15 @@ export const collectFolderForDownload = async (
 
   for (const entry of entries) {
     if (entry.kind === "file") {
-      const { bytes, filename } = await exportEntry(entry);
+      const { blob, filename } = await exportEntry(entry);
       const index = nameCounts.get(filename) ?? 0;
       nameCounts.set(filename, index + 1);
-      items.push({ relativePath: dedupeFilename(filename, index), bytes });
+      items.push({ relativePath: dedupeFilename(filename, index), input: blob });
     } else {
       const dirName = entry.name ?? entry.opaqueId;
       const children = await collectFolderForDownload(entry.opaquePath, password);
       for (const child of children) {
-        items.push({ relativePath: `${dirName}/${child.relativePath}`, bytes: child.bytes });
+        items.push({ relativePath: `${dirName}/${child.relativePath}`, input: child.input });
       }
     }
   }
